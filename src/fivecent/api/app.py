@@ -64,6 +64,17 @@ def create_app(
 
     app = FastAPI(title="Port Vauban Yacht Concierge", lifespan=lifespan)
 
+    @app.get("/")
+    def root() -> dict[str, object]:
+        return {
+            "ok": True,
+            "service": "fivecent",
+            "health": "/health",
+            "chat": "POST /chat",
+            "webhook": "/webhook",
+            "admin": "Streamlit on ADMIN_PORT, not this API",
+        }
+
     @app.get("/health")
     def health() -> dict[str, bool]:
         return {"ok": True}
