@@ -6,6 +6,8 @@ class Settings(BaseSettings):
 
     database_url: str = "sqlite+aiosqlite:///./fivecent.db"
     redis_url: str = ""
+    # "arq" only if REDIS_URL is set and a worker process is running.
+    queue_backend: str = "inline"
     openai_api_key: str = ""
     openai_model: str = "gpt-4o-mini"
     whatsapp_verify_token: str = ""

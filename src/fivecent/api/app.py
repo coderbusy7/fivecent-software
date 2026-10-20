@@ -76,8 +76,25 @@ def create_app(
         }
 
     @app.get("/health")
-    def health() -> dict[str, bool]:
-        return {"ok": True}
+    def health() -> dict[str, object]:
+        current: Settings = getattr(app.state, "settings", settings)
+        phone = current.whatsapp_phone_number_id
+        return {
+            "ok": True,
+            "openai": bool(current.openai_api_key),
+            "redis": bool(current.redis_url),
+            "queue": (
+                "arq"
+                if current.redis_url and current.queue_backend == "arq"
+                else "inline"
+            ),
+            "whatsapp": {
+                "verify_token": bool(current.whatsapp_verify_token),
+                "app_secret": bool(current.whatsapp_app_secret),
+                "access_token": bool(current.whatsapp_access_token),
+                "phone_number_id": bool(phone and phone != "seed-phone-number-id"),
+            },
+        }
 
     @app.post("/chat")
     async def chat(payload: ChatInput) -> dict[str, str]:
@@ -113,13 +130,18 @@ def create_app(
         )
         current: Container = app.state.container
         tenant_id = events[0].tenant_id if events else None
+        logger.info("webhook accepted events=%s tenant=%s", len(events), tenant_id)
         await current.conversations.record_raw_inbound(
             tenant_id=tenant_id,
             channel="whatsapp",
             body=raw.decode("utf-8", errors="replace"),
         )
-        for event in events:
-            await current.queue.enqueue(event)
+        try:
+            for event in events:
+                await current.queue.enqueue(event)
+        except Exception:
+            logger.exception("webhook turn failed events=%s tenant=%s", len(events), tenant_id)
+            raise
         return {"status": "ok"}
 
     @app.get("/webhook", response_class=PlainTextResponse)

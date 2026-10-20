@@ -68,7 +68,7 @@ async def build_container(
             cache = MemoryCache()
 
     if queue is None:
-        if settings.redis_url and not for_worker:
+        if settings.redis_url and settings.queue_backend == "arq" and not for_worker:
             from arq.connections import RedisSettings, create_pool
             from fivecent.adapters.queue.arq_jobs import ArqQueue
 
