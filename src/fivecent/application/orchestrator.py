@@ -52,7 +52,12 @@ async def orchestrate(
                 latency_ms=latency_ms,
                 tools=["scope_guardrail"],
             )
-    tool_context = ToolContext(tenant=tenant, conversation_id=conversation_id)
+    tool_context = ToolContext(
+        tenant=tenant,
+        conversation_id=conversation_id,
+        channel=channel,
+        user_channel_id=user_channel_id,
+    )
     messages = [
         ChatMessage(role="system", content=service.system_prompt),
         *[

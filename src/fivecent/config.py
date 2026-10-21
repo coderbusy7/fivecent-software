@@ -20,6 +20,10 @@ class Settings(BaseSettings):
     whatsapp_graph_version: str = "v21.0"
     seed_tenant_id: str = "port-vauban"
     admin_api_token: str = ""
+    telegram_bot_token: str = ""
+    # Quiet window before coalescing rapid WhatsApp bursts into one orchestrator turn.
+    # Set 0 to disable (tests / debugging).
+    debounce_seconds: float = 2.0
 
 
 def get_settings() -> Settings:

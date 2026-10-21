@@ -5,6 +5,7 @@ from uuid import uuid4
 
 import httpx
 
+from fivecent.messaging.errors import SessionWindowClosedError, graph_error_code
 from fivecent.messaging.outbound import OutboundChannel
 
 logger = logging.getLogger(__name__)
@@ -54,6 +55,16 @@ class WhatsAppSender(OutboundChannel):
                 user_channel_id, "[PHONE]"
             )
             logger.error("WhatsApp API rejected reply (HTTP %s): %s", response.status_code, detail)
+            try:
+                body = response.json()
+            except ValueError:
+                body = None
+            if graph_error_code(body) == SessionWindowClosedError.code:
+                raise SessionWindowClosedError(
+                    tenant_id=tenant_id,
+                    user_channel_id=user_channel_id,
+                    detail=detail,
+                )
             response.raise_for_status()
         payload = response.json()
         messages = payload.get("messages") or []

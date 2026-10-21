@@ -37,6 +37,7 @@ def settings() -> Settings:
         whatsapp_phone_number_id="7794189252778687",
         seed_tenant_id="port-vauban",
         admin_api_token="",
+        debounce_seconds=0.0,
     )
 
 

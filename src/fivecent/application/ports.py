@@ -58,6 +58,28 @@ class CachePort(Protocol):
 
     async def incr(self, key: str) -> int: ...
 
+    async def append_debounce_fragment(
+        self,
+        tenant_id: str,
+        channel: str,
+        user_channel_id: str,
+        *,
+        text: str,
+        provider_message_id: str,
+    ) -> None: ...
+
+    async def bump_debounce_generation(
+        self, tenant_id: str, channel: str, user_channel_id: str
+    ) -> int: ...
+
+    async def get_debounce_generation(
+        self, tenant_id: str, channel: str, user_channel_id: str
+    ) -> int: ...
+
+    async def drain_debounce_fragments(
+        self, tenant_id: str, channel: str, user_channel_id: str
+    ) -> list[dict]: ...
+
 
 class MessageQueue(Protocol):
     async def enqueue(self, event: InboundMessageEvent) -> None: ...
@@ -67,6 +89,12 @@ class ChannelSender(Protocol):
     async def send(
         self, tenant_id: str, channel: Channel, user_channel_id: str, text: str
     ) -> str: ...
+
+
+class OpsAlertPort(Protocol):
+    """Kernel-facing broker push (Telegram today). Used for ops handoffs like 131047."""
+
+    async def notify_handoff(self, tenant_id: str, payload: dict) -> None: ...
 
 
 class TenantRepo(Protocol):
@@ -123,6 +151,8 @@ class Container:
         providers: PluginRegistry[LLMPort],
         services: PluginRegistry[ServiceModule],
         seed_tenant_id: str,
+        debounce_seconds: float = 2.0,
+        ops_alerts: Optional[OpsAlertPort] = None,
     ) -> None:
         self.cache = cache
         self.queue = queue
@@ -132,3 +162,5 @@ class Container:
         self.providers = providers
         self.services = services
         self.seed_tenant_id = seed_tenant_id
+        self.debounce_seconds = debounce_seconds
+        self.ops_alerts = ops_alerts

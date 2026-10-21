@@ -25,6 +25,8 @@ class ToolCall:
 class ToolContext:
     tenant: TenantContext
     conversation_id: str
+    channel: str = ""
+    user_channel_id: str = ""
 
 
 ToolHandler = Callable[[dict[str, Any], ToolContext], Awaitable[str]]

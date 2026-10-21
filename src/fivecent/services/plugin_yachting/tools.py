@@ -294,6 +294,7 @@ class YachtingTools:
             return _error("invalid_destination", "destination is required.")
         if preference not in {"whatsapp", "call", "either"}:
             return _error("invalid_preference", "contact_preference must be whatsapp, call, or either.")
+        tenant = context.tenant
         payload = {
             "ok": True,
             "reason": "followup",
@@ -302,8 +303,10 @@ class YachtingTools:
             "notes": str(arguments.get("notes") or "").strip(),
             "customer_name": str(arguments.get("customer_name") or "").strip(),
             "conversation_id": context.conversation_id,
+            **_guest_alert_fields(context),
+            "alert_brokers": await self._selected_alert_brokers(tenant),
         }
-        await self._alerts.notify_followup(context.tenant.id, payload)
+        await self._alerts.notify_followup(tenant.id, payload)
         return json.dumps(payload)
 
     async def escalate_and_soft_hold(
@@ -368,14 +371,21 @@ class YachtingTools:
             "days": approval.days,
             "expires_at": approval.expires_at.isoformat(),
             "state": "option_held",
+            "quote_id": quote_id,
+            **_guest_alert_fields(context),
+            "alert_brokers": await self._selected_alert_brokers(tenant),
         }
+        await self._alerts.notify_hold(tenant.id, payload)
+        return json.dumps(payload)
+
+    async def _selected_alert_brokers(self, tenant: TenantContext) -> list[dict[str, Any]]:
         rr = (
             await self._cache.incr(f"rr:{tenant.id}")
             if tenant.routing_mode == "round_robin"
             else 0
         )
         selected = pick_alert_brokers(tenant, rr)
-        payload["alert_brokers"] = [
+        return [
             {
                 "name": broker.name,
                 "phone_number": broker.phone_number,
@@ -383,8 +393,18 @@ class YachtingTools:
             }
             for broker in selected
         ]
-        await self._alerts.notify_hold(tenant.id, payload)
-        return json.dumps(payload)
+
+
+def _guest_alert_fields(context: ToolContext) -> dict[str, str]:
+    fields: dict[str, str] = {
+        "guest_channel": context.channel,
+        "guest_user_id": context.user_channel_id,
+    }
+    if context.channel == "whatsapp" and context.user_channel_id:
+        digits = "".join(ch for ch in context.user_channel_id if ch.isdigit())
+        if digits:
+            fields["wa_me"] = f"https://wa.me/{digits}"
+    return fields
 
 
 def _error(code: str, message: str) -> str:

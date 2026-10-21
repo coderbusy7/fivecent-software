@@ -7,6 +7,7 @@ from time import time
 
 WINDOW_TTL_SECONDS = 48 * 3600
 WINDOW_LIMIT = 15
+DEBOUNCE_TTL_SECONDS = 60
 
 
 class MemoryCache:
@@ -16,6 +17,9 @@ class MemoryCache:
         self._window: dict[tuple[str, str, str], tuple[float, list[dict]]] = {}
         self._outbound: dict[tuple[str, str], float] = {}
         self._counters: dict[str, int] = defaultdict(int)
+        self._debounce_buf: dict[tuple[str, str, str], tuple[float, list[dict]]] = {}
+        self._debounce_gen: dict[tuple[str, str, str], tuple[float, int]] = {}
+        self._debounce_mu = asyncio.Lock()
 
     @asynccontextmanager
     async def lock(self, tenant_id: str, channel: str, user_channel_id: str):
@@ -55,3 +59,67 @@ class MemoryCache:
     async def incr(self, key: str) -> int:
         self._counters[key] += 1
         return self._counters[key]
+
+    def _debounce_key(
+        self, tenant_id: str, channel: str, user_channel_id: str
+    ) -> tuple[str, str, str]:
+        return (tenant_id, channel, user_channel_id)
+
+    async def append_debounce_fragment(
+        self,
+        tenant_id: str,
+        channel: str,
+        user_channel_id: str,
+        *,
+        text: str,
+        provider_message_id: str,
+    ) -> None:
+        key = self._debounce_key(tenant_id, channel, user_channel_id)
+        async with self._debounce_mu:
+            expires, items = self._debounce_buf.get(key, (0.0, []))
+            if expires < time():
+                items = []
+            items = list(items)
+            items.append({"text": text, "provider_message_id": provider_message_id})
+            self._debounce_buf[key] = (time() + DEBOUNCE_TTL_SECONDS, items)
+
+    async def bump_debounce_generation(
+        self, tenant_id: str, channel: str, user_channel_id: str
+    ) -> int:
+        key = self._debounce_key(tenant_id, channel, user_channel_id)
+        async with self._debounce_mu:
+            expires, gen = self._debounce_gen.get(key, (0.0, 0))
+            if expires < time():
+                gen = 0
+            gen += 1
+            self._debounce_gen[key] = (time() + DEBOUNCE_TTL_SECONDS, gen)
+            return gen
+
+    async def get_debounce_generation(
+        self, tenant_id: str, channel: str, user_channel_id: str
+    ) -> int:
+        key = self._debounce_key(tenant_id, channel, user_channel_id)
+        async with self._debounce_mu:
+            expires, gen = self._debounce_gen.get(key, (0.0, 0))
+            if expires < time():
+                return 0
+            return gen
+
+    async def drain_debounce_fragments(
+        self, tenant_id: str, channel: str, user_channel_id: str
+    ) -> list[dict]:
+        key = self._debounce_key(tenant_id, channel, user_channel_id)
+        async with self._debounce_mu:
+            packed = self._debounce_buf.pop(key, None)
+            if not packed or packed[0] < time():
+                return []
+            seen: set[str] = set()
+            out: list[dict] = []
+            for item in packed[1]:
+                mid = str(item.get("provider_message_id") or "")
+                if mid and mid in seen:
+                    continue
+                if mid:
+                    seen.add(mid)
+                out.append(item)
+            return out

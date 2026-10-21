@@ -15,6 +15,12 @@ class BrokerAlertPort(Protocol):
     async def notify_followup(self, tenant_id: str, payload: dict) -> None: ...
 
 
+class BrokerAlertChannel(Protocol):
+    """Transport sink for broker alerts. Chatwoot (etc.) implements this later."""
+
+    async def deliver(self, tenant_id: str, kind: str, payload: dict) -> None: ...
+
+
 class FleetRepo(Protocol):
     async def list_active(self, tenant_id: str) -> Sequence[Boat]: ...
 

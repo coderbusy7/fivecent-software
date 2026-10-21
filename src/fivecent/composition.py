@@ -5,6 +5,7 @@ from typing import Optional
 from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
+from fivecent.adapters.alerts.factory import build_broker_alerts
 from fivecent.adapters.cache.memory import MemoryCache
 from fivecent.adapters.cache.redis_store import RedisCache
 from fivecent.adapters.llm.factory import build_llm_plugins
@@ -73,6 +74,7 @@ async def build_container(
     if sender is None:
         sender = build_outbound_plugins(settings, closers)
 
+    ops_alerts = build_broker_alerts(settings, closers)
     container = AppContainer(
         cache=cache,
         queue=queue,
@@ -80,8 +82,16 @@ async def build_container(
         tenants=SqlTenantRepo(sessions),
         conversations=SqlConversationRepo(sessions),
         providers=PluginRegistry(providers),
-        services=build_service_plugins(sessions, cache),
+        services=build_service_plugins(
+            sessions,
+            cache,
+            settings=settings,
+            closers=closers,
+            alerts=ops_alerts,
+        ),
         seed_tenant_id=settings.seed_tenant_id,
+        debounce_seconds=settings.debounce_seconds,
+        ops_alerts=ops_alerts,
         closers=closers,
     )
     if isinstance(queue, InlineQueue):

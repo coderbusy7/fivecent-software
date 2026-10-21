@@ -20,6 +20,33 @@ def _digits(value: Any) -> str:
     return "".join(ch for ch in str(value or "") if ch.isdigit())
 
 
+def _echo_events(
+    *,
+    tenant_id: str,
+    echoes: list,
+) -> list[InboundMessageEvent]:
+    events: list[InboundMessageEvent] = []
+    for echo in echoes:
+        if not isinstance(echo, dict):
+            continue
+        text = ((echo.get("text") or {}).get("body")) or None
+        user_id = str(echo.get("to") or echo.get("recipient") or "")
+        if not user_id or not echo.get("id"):
+            continue
+        events.append(
+            InboundMessageEvent(
+                tenant_id=tenant_id,
+                channel="whatsapp",
+                user_channel_id=user_id,
+                provider_message_id=str(echo["id"]),
+                text=text,
+                timestamp=_ts(echo.get("timestamp")),
+                is_business_echo=True,
+            )
+        )
+    return events
+
+
 def normalize_whatsapp_payload(
     payload: dict,
     *,
@@ -28,6 +55,10 @@ def normalize_whatsapp_payload(
     events: list[InboundMessageEvent] = []
     for entry in payload.get("entry") or []:
         for change in entry.get("changes") or []:
+            # Drop statuses / template updates; omit field only for legacy payloads.
+            field = change.get("field")
+            if field is not None and field != "messages":
+                continue
             value = change.get("value") or {}
             metadata = value.get("metadata") or {}
             phone_number_id = metadata.get("phone_number_id")
@@ -54,22 +85,10 @@ def normalize_whatsapp_payload(
                         timestamp=_ts(message.get("timestamp")),
                     )
                 )
-            for echo in value.get("smb_message_echoes") or []:
-                text = ((echo.get("text") or {}).get("body")) or None
-                user_id = str(echo.get("to") or echo.get("recipient") or "")
-                if not user_id or not echo.get("id"):
-                    continue
-                events.append(
-                    InboundMessageEvent(
-                        tenant_id=tenant_id,
-                        channel="whatsapp",
-                        user_channel_id=user_id,
-                        provider_message_id=str(echo["id"]),
-                        text=text,
-                        timestamp=_ts(echo.get("timestamp")),
-                        is_business_echo=True,
-                    )
-                )
+            for key in ("smb_message_echoes", "message_echoes"):
+                echoes = value.get(key) or []
+                if isinstance(echoes, list):
+                    events.extend(_echo_events(tenant_id=tenant_id, echoes=echoes))
     return [event for event in events if event.provider_message_id and event.user_channel_id]
 
 

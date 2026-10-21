@@ -99,6 +99,172 @@ def test_normalize_live_meta_hi_payload() -> None:
     assert events[0].tenant_id == "port-vauban"
 
 
+def test_statuses_field_produces_no_events() -> None:
+    payload = {
+        "object": "whatsapp_business_account",
+        "entry": [
+            {
+                "id": "waba",
+                "changes": [
+                    {
+                        "field": "statuses",
+                        "value": {
+                            "messaging_product": "whatsapp",
+                            "metadata": {
+                                "display_phone_number": "15551797781",
+                                "phone_number_id": "7794189252778687",
+                            },
+                            "statuses": [
+                                {
+                                    "id": "wamid.status",
+                                    "status": "delivered",
+                                    "timestamp": "1758254145",
+                                    "recipient_id": "17863559966",
+                                }
+                            ],
+                        },
+                    }
+                ],
+            }
+        ],
+    }
+    events = normalize_whatsapp_payload(
+        payload, tenant_for_phone_number_id=lambda pid: "port-vauban"
+    )
+    assert events == []
+
+
+def test_mixed_statuses_and_messages_keeps_client_text_only() -> None:
+    payload = {
+        "object": "whatsapp_business_account",
+        "entry": [
+            {
+                "id": "waba",
+                "changes": [
+                    {
+                        "field": "statuses",
+                        "value": {
+                            "metadata": {
+                                "display_phone_number": "15551797781",
+                                "phone_number_id": "7794189252778687",
+                            },
+                            "statuses": [
+                                {
+                                    "id": "wamid.status",
+                                    "status": "read",
+                                    "timestamp": "1",
+                                    "recipient_id": "17863559966",
+                                }
+                            ],
+                        },
+                    },
+                    {
+                        "field": "messages",
+                        "value": {
+                            "messaging_product": "whatsapp",
+                            "metadata": {
+                                "display_phone_number": "15551797781",
+                                "phone_number_id": "7794189252778687",
+                            },
+                            "messages": [
+                                {
+                                    "from": "17863559966",
+                                    "id": "wamid.client",
+                                    "timestamp": "2",
+                                    "text": {"body": "Need a boat"},
+                                    "type": "text",
+                                }
+                            ],
+                        },
+                    },
+                ],
+            }
+        ],
+    }
+    events = normalize_whatsapp_payload(
+        payload, tenant_for_phone_number_id=lambda pid: "port-vauban"
+    )
+    assert len(events) == 1
+    assert events[0].text == "Need a boat"
+    assert events[0].is_business_echo is False
+    assert events[0].user_channel_id == "17863559966"
+
+
+def test_smb_message_echoes_are_business_echo() -> None:
+    payload = {
+        "entry": [
+            {
+                "changes": [
+                    {
+                        "field": "messages",
+                        "value": {
+                            "metadata": {
+                                "display_phone_number": "15551797781",
+                                "phone_number_id": "7794189252778687",
+                            },
+                            "smb_message_echoes": [
+                                {
+                                    "from": "15551797781",
+                                    "to": "17863559966",
+                                    "id": "wamid.echo.smb",
+                                    "timestamp": "3",
+                                    "type": "text",
+                                    "text": {"body": "I'll take this lead"},
+                                }
+                            ],
+                        },
+                    }
+                ]
+            }
+        ]
+    }
+    events = normalize_whatsapp_payload(
+        payload, tenant_for_phone_number_id=lambda pid: "port-vauban"
+    )
+    assert len(events) == 1
+    assert events[0].is_business_echo is True
+    assert events[0].user_channel_id == "17863559966"
+    assert events[0].text == "I'll take this lead"
+    assert events[0].provider_message_id == "wamid.echo.smb"
+
+
+def test_message_echoes_are_business_echo() -> None:
+    payload = {
+        "entry": [
+            {
+                "changes": [
+                    {
+                        "field": "messages",
+                        "value": {
+                            "metadata": {
+                                "display_phone_number": "15551797781",
+                                "phone_number_id": "7794189252778687",
+                            },
+                            "message_echoes": [
+                                {
+                                    "from": "15551797781",
+                                    "to": "33699988877",
+                                    "id": "wamid.echo.cloud",
+                                    "timestamp": "4",
+                                    "type": "text",
+                                    "text": {"body": "Calling you now"},
+                                }
+                            ],
+                        },
+                    }
+                ]
+            }
+        ]
+    }
+    events = normalize_whatsapp_payload(
+        payload, tenant_for_phone_number_id=lambda pid: "port-vauban"
+    )
+    assert len(events) == 1
+    assert events[0].is_business_echo is True
+    assert events[0].user_channel_id == "33699988877"
+    assert events[0].text == "Calling you now"
+
+
 def test_business_self_messages_are_dropped() -> None:
     payload = {
         "entry": [
