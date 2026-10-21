@@ -1,4 +1,4 @@
-from fivecent.services.yachting.persistence.repos import (
+from fivecent.services.plugin_yachting.persistence.repos import (
     SqlFleetRepo,
     SqlHoldRepo,
     SqlLeadRepo,

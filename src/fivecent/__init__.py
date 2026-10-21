@@ -1,1 +1,1 @@
-"""Port Vauban yacht concierge platform."""
+"""Fivecent — multi-tenant messaging kernel with industry plugins."""

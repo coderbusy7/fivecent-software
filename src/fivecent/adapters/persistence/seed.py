@@ -7,7 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from fivecent.adapters.persistence.models import Broker, Tenant
 from fivecent.config import Settings
 from fivecent.domain.tenancy import DEFAULT_FEATURE_FLAGS
-from fivecent.services.yachting.persistence.seed import seed_fleet
+from fivecent.services.plugin_yachting.persistence.seed import seed_fleet
 
 SEED_TENANT_ID = "port-vauban"
 

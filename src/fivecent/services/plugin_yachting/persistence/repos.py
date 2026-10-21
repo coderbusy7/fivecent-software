@@ -8,9 +8,9 @@ from uuid import uuid4
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from fivecent.services.yachting.domain.fleet import ActiveHold, hold_overlaps
-from fivecent.services.yachting.domain.quoting import Boat, QuoteBreakdown
-from fivecent.services.yachting.persistence.models import FleetInventory, Hold, Lead, Quote
+from fivecent.services.plugin_yachting.domain.fleet import ActiveHold, hold_overlaps
+from fivecent.services.plugin_yachting.domain.quoting import Boat, QuoteBreakdown
+from fivecent.services.plugin_yachting.persistence.models import FleetInventory, Hold, Lead, Quote
 
 
 def _boat(row: FleetInventory) -> Boat:

@@ -1,8 +1,8 @@
 from datetime import date, datetime, timezone
 
-from fivecent.services.yachting.domain.fleet import ActiveHold
-from fivecent.services.yachting.domain.holds import SoftHoldApproval, SoftHoldRequest, escalate_and_soft_hold
-from fivecent.services.yachting.domain.quoting import DomainError
+from fivecent.services.plugin_yachting.domain.fleet import ActiveHold
+from fivecent.services.plugin_yachting.domain.holds import SoftHoldApproval, SoftHoldRequest, escalate_and_soft_hold
+from fivecent.services.plugin_yachting.domain.quoting import DomainError
 
 NOW = datetime(2026, 6, 1, 10, 0, tzinfo=timezone.utc)
 

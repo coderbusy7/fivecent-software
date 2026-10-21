@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from typing import Sequence
 
-from fivecent.services.yachting.domain.quoting import Boat
+from fivecent.services.plugin_yachting.domain.quoting import Boat
 from fivecent.domain.tenancy import TenantContext
 
 

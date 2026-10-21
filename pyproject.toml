@@ -1,7 +1,7 @@
 [project]
 name = "fivecent"
 version = "0.1.0"
-description = "Port Vauban yacht concierge — hexagonal WhatsApp first slice"
+description = "Fivecent — multi-tenant messaging kernel with industry plugins"
 requires-python = ">=3.10"
 dependencies = [
     "fastapi>=0.115",

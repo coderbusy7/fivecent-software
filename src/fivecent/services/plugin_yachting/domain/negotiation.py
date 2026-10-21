@@ -2,7 +2,7 @@ from dataclasses import dataclass
 from decimal import Decimal
 from typing import Optional
 
-from fivecent.services.yachting.domain.quoting import DomainError, QuoteBreakdown, money
+from fivecent.services.plugin_yachting.domain.quoting import DomainError, QuoteBreakdown, money
 
 MAX_BASE_CONCESSION = Decimal("0.08")
 

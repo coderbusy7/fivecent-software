@@ -9,10 +9,8 @@ from fastapi import BackgroundTasks, FastAPI, HTTPException, Query, Request
 from fastapi.responses import PlainTextResponse
 
 from fivecent.adapters.inbound.http_chat import ChatInput, chat_to_event
-from fivecent.adapters.inbound.registry import (
-    WebhookAdapter,
-    create_webhook_registry,
-)
+from fivecent.messaging.factory import build_inbound_plugins
+from fivecent.messaging.graph import WebhookAdapter
 from fivecent.adapters.persistence.engine import init_database, make_engine, make_sessionmaker
 from fivecent.api.internal import register_internal_routes
 from fivecent.application.ports import Container
@@ -38,9 +36,7 @@ def create_app(
     webhook_adapters: Optional[PluginRegistry[WebhookAdapter]] = None,
 ) -> FastAPI:
     settings = settings or get_settings()
-    webhook_adapters = webhook_adapters or create_webhook_registry(
-        settings.whatsapp_app_secret, settings.whatsapp_verify_token
-    )
+    webhook_adapters = webhook_adapters or build_inbound_plugins(settings)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -68,7 +64,7 @@ def create_app(
         await built.aclose()
         await engine.dispose()
 
-    app = FastAPI(title="Port Vauban Yacht Concierge", lifespan=lifespan)
+    app = FastAPI(title="Fivecent", lifespan=lifespan)
 
     @app.get("/")
     def root() -> dict[str, object]:

@@ -5,7 +5,7 @@ from alembic import context
 from sqlalchemy import engine_from_config, pool
 
 from fivecent.adapters.persistence.models import Base
-from fivecent.services.yachting.persistence import models as _yachting_models  # noqa: F401
+from fivecent.services.plugin_yachting.persistence import models as _yachting_models  # noqa: F401
 
 config = context.config
 if config.config_file_name is not None:

@@ -3,7 +3,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 from fivecent.adapters.persistence.models import Base
 from fivecent.adapters.persistence.seed import seed_if_empty
 from fivecent.config import Settings
-from fivecent.services.yachting.persistence import models as _yachting_models  # noqa: F401
+from fivecent.services.plugin_yachting.persistence import models as _yachting_models  # noqa: F401
 
 
 def async_database_url(database_url: str) -> str:

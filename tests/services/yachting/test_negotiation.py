@@ -1,8 +1,8 @@
 from datetime import date
 from decimal import Decimal
 
-from fivecent.services.yachting.domain.negotiation import evaluate_negotiation_floor
-from fivecent.services.yachting.domain.quoting import Boat, calculate_itemized_quote
+from fivecent.services.plugin_yachting.domain.negotiation import evaluate_negotiation_floor
+from fivecent.services.plugin_yachting.domain.quoting import Boat, calculate_itemized_quote
 
 LAGOON = Boat(
     id="lagoon-450",

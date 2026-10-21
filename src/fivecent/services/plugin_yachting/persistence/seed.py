@@ -3,7 +3,7 @@ from decimal import Decimal
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from fivecent.services.yachting.persistence.models import FleetInventory
+from fivecent.services.plugin_yachting.persistence.models import FleetInventory
 
 FLEET = (
     {

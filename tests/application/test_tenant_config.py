@@ -6,7 +6,7 @@ from fastapi.testclient import TestClient
 from fivecent.api.app import create_app
 from fivecent.application.tools import ToolCall, ToolContext
 from fivecent.domain.events import InboundMessageEvent
-from fivecent.services.yachting.domain.quoting import calculate_itemized_quote
+from fivecent.services.plugin_yachting.domain.quoting import calculate_itemized_quote
 from tests.services.yachting.test_quoting import LAGOON
 
 
@@ -45,7 +45,7 @@ async def test_soft_hold_flag_disables_tool(container) -> None:
 
 async def test_five_percent_floor_uses_tenant_rule() -> None:
     quote = calculate_itemized_quote(LAGOON, date(2026, 6, 6), 2)
-    from fivecent.services.yachting.domain.negotiation import evaluate_negotiation_floor
+    from fivecent.services.plugin_yachting.domain.negotiation import evaluate_negotiation_floor
 
     result = evaluate_negotiation_floor(quote, Decimal("6000"), max_discount_pct=Decimal("0.05"))
     assert result.ok is False

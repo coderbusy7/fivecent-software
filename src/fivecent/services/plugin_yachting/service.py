@@ -3,15 +3,15 @@ from __future__ import annotations
 from fivecent.application.ports import CachePort
 from fivecent.application.tools import PreparedService, ServiceModule, ToolRegistry
 from fivecent.domain.tenancy import TenantContext
-from fivecent.services.yachting.ports import (
+from fivecent.services.plugin_yachting.ports import (
     BrokerAlertPort,
     FleetRepo,
     HoldRepo,
     LeadRepo,
     QuoteRepo,
 )
-from fivecent.services.yachting.prompts import build_system_prompt, fleet_summary
-from fivecent.services.yachting.tools import YachtingTools
+from fivecent.services.plugin_yachting.prompts import build_system_prompt, fleet_summary
+from fivecent.services.plugin_yachting.tools import YachtingTools
 
 
 class YachtingService(ServiceModule):

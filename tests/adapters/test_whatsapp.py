@@ -4,9 +4,10 @@ import json
 
 from fastapi.testclient import TestClient
 
-from fivecent.adapters.inbound.instagram import normalize_instagram_payload
-from fivecent.adapters.inbound.messenger import normalize_messenger_payload
-from fivecent.adapters.inbound.whatsapp import normalize_whatsapp_payload, verify_signature
+from fivecent.messaging.graph import verify_signature
+from fivecent.messaging.plugin_instagram import normalize_instagram_payload
+from fivecent.messaging.plugin_meta import normalize_messenger_payload
+from fivecent.messaging.plugin_whatsapp import normalize_whatsapp_payload
 from fivecent.api.app import create_app
 
 SAMPLE = {
@@ -162,5 +163,12 @@ def test_registered_channel_route_accepts_whatsapp(container, settings) -> None:
 def test_unregistered_channel_webhook_returns_404(container, settings) -> None:
     app = create_app(container=container, settings=settings, phone_map={})
     with TestClient(app) as client:
-        response = client.post("/webhooks/instagram", content=b"{}")
+        response = client.post("/webhooks/telegram", content=b"{}")
     assert response.status_code == 404
+
+
+def test_instagram_plugin_is_registered_but_not_configured(container, settings) -> None:
+    app = create_app(container=container, settings=settings, phone_map={})
+    with TestClient(app) as client:
+        response = client.post("/webhooks/instagram", content=b"{}")
+    assert response.status_code == 503

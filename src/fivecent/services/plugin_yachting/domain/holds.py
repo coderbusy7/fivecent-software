@@ -2,8 +2,8 @@ from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from typing import Optional, Sequence
 
-from fivecent.services.yachting.domain.fleet import ActiveHold, hold_overlaps
-from fivecent.services.yachting.domain.quoting import DomainError
+from fivecent.services.plugin_yachting.domain.fleet import ActiveHold, hold_overlaps
+from fivecent.services.plugin_yachting.domain.quoting import DomainError
 
 HOLD_TTL = timedelta(hours=24)
 

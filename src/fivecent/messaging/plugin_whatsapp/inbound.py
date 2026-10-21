@@ -1,28 +1,12 @@
 from __future__ import annotations
 
-import hashlib
-import hmac
 from datetime import datetime, timezone
 from typing import Any, Callable, Optional
 
 from fivecent.domain.events import InboundMessageEvent
+from fivecent.messaging.graph import GraphWebhookAdapter, TenantLookup
 
-VerifyTokenLookup = Callable[[], Optional[str]]
-TenantLookup = Callable[[str], Optional[str]]
-
-
-def verify_webhook_challenge(mode: str, token: str, challenge: str, expected_token: str) -> Optional[str]:
-    if mode == "subscribe" and expected_token and hmac.compare_digest(token, expected_token):
-        return challenge
-    return None
-
-
-def verify_signature(app_secret: str, raw_body: bytes, header: str) -> bool:
-    if not app_secret or not header:
-        return False
-    digest = hmac.new(app_secret.encode("utf-8"), raw_body, hashlib.sha256).hexdigest()
-    expected = f"sha256={digest}"
-    return hmac.compare_digest(expected, header)
+TenantPhoneLookup = Callable[[str], Optional[str]]
 
 
 def _ts(value: Any) -> datetime:
@@ -35,7 +19,7 @@ def _ts(value: Any) -> datetime:
 def normalize_whatsapp_payload(
     payload: dict,
     *,
-    tenant_for_phone_number_id: TenantLookup,
+    tenant_for_phone_number_id: TenantPhoneLookup,
 ) -> list[InboundMessageEvent]:
     events: list[InboundMessageEvent] = []
     for entry in payload.get("entry") or []:
@@ -79,3 +63,14 @@ def normalize_whatsapp_payload(
                     )
                 )
     return [event for event in events if event.provider_message_id and event.user_channel_id]
+
+
+class WhatsAppWebhookAdapter(GraphWebhookAdapter):
+    channel = "whatsapp"
+
+    def parse(
+        self, payload: dict, tenant_for_account_id: TenantLookup
+    ) -> list[InboundMessageEvent]:
+        return normalize_whatsapp_payload(
+            payload, tenant_for_phone_number_id=tenant_for_account_id
+        )

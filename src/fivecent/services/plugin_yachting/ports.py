@@ -3,8 +3,8 @@ from __future__ import annotations
 from datetime import date, datetime
 from typing import Optional, Protocol, Sequence
 
-from fivecent.services.yachting.domain.fleet import ActiveHold
-from fivecent.services.yachting.domain.quoting import Boat, QuoteBreakdown
+from fivecent.services.plugin_yachting.domain.fleet import ActiveHold
+from fivecent.services.plugin_yachting.domain.quoting import Boat, QuoteBreakdown
 
 
 class BrokerAlertPort(Protocol):

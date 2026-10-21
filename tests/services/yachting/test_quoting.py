@@ -1,7 +1,7 @@
 from datetime import date
 from decimal import Decimal
 
-from fivecent.services.yachting.domain.quoting import (
+from fivecent.services.plugin_yachting.domain.quoting import (
     Boat,
     DomainError,
     QuoteBreakdown,

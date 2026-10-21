@@ -8,16 +8,16 @@ from uuid import uuid4
 
 from fivecent.application.ports import CachePort
 from fivecent.application.tools import Tool, ToolContext, ToolSpec
-from fivecent.services.yachting.domain.fleet import check_fleet_availability
-from fivecent.services.yachting.domain.holds import SoftHoldRequest, escalate_and_soft_hold
-from fivecent.services.yachting.domain.negotiation import evaluate_negotiation_floor
-from fivecent.services.yachting.domain.quoting import (
+from fivecent.services.plugin_yachting.domain.fleet import check_fleet_availability
+from fivecent.services.plugin_yachting.domain.holds import SoftHoldRequest, escalate_and_soft_hold
+from fivecent.services.plugin_yachting.domain.negotiation import evaluate_negotiation_floor
+from fivecent.services.plugin_yachting.domain.quoting import (
     DomainError,
     calculate_itemized_quote,
     quote_to_dict,
 )
 from fivecent.domain.tenancy import TenantContext, pick_alert_brokers
-from fivecent.services.yachting.ports import (
+from fivecent.services.plugin_yachting.ports import (
     BrokerAlertPort,
     FleetRepo,
     HoldRepo,
