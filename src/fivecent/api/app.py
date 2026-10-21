@@ -5,7 +5,7 @@ import logging
 from contextlib import asynccontextmanager
 from typing import Optional
 
-from fastapi import BackgroundTasks, FastAPI, HTTPException, Query, Request
+from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import PlainTextResponse
 
 from fivecent.adapters.inbound.http_chat import ChatInput, chat_to_event
@@ -125,7 +125,19 @@ def create_app(
                 payload, tenant_for_account_id=routing.get
             )
             tenant_id = events[0].tenant_id if events else None
-            logger.info("webhook accepted events=%s tenant=%s", len(events), tenant_id)
+            phone_number_id = (
+                ((payload.get("entry") or [{}])[0].get("changes") or [{}])[0]
+                .get("value", {})
+                .get("metadata", {})
+                .get("phone_number_id")
+            )
+            logger.warning(
+                "webhook accepted channel=%s events=%s tenant=%s phone_number_id=%s",
+                channel,
+                len(events),
+                tenant_id,
+                phone_number_id,
+            )
             current: Container = app.state.container
             try:
                 await current.conversations.record_raw_inbound(
@@ -140,9 +152,7 @@ def create_app(
         except Exception:
             logger.exception("webhook processing failed channel=%s tenant=%s", channel, tenant_id)
 
-    async def receive_webhook(
-        channel: str, request: Request, background_tasks: BackgroundTasks
-    ) -> dict[str, str]:
+    async def receive_webhook(channel: str, request: Request) -> dict[str, str]:
         try:
             adapter = app.state.webhook_adapters.get(channel)
         except LookupError as exc:
@@ -151,7 +161,14 @@ def create_app(
             raise HTTPException(status_code=503, detail="Channel webhook credentials are not configured.")
         raw = await request.body()
         header = request.headers.get("X-Hub-Signature-256", "")
+        logger.warning(
+            "webhook POST channel=%s bytes=%s signature=%s",
+            channel,
+            len(raw),
+            "present" if header else "missing",
+        )
         if not adapter.verify_signature(raw, header):
+            logger.warning("webhook rejected invalid signature channel=%s", channel)
             raise HTTPException(status_code=403, detail="Invalid signature.")
         try:
             payload = json.loads(raw or b"{}")
@@ -159,20 +176,17 @@ def create_app(
             raise HTTPException(status_code=400, detail="Invalid JSON.") from exc
         if not isinstance(payload, dict):
             raise HTTPException(status_code=400, detail="Invalid JSON.")
-        background_tasks.add_task(process_webhook_payload, channel, payload, raw)
+        # Inline so Render free instances cannot drop the Graph reply after 200.
+        await process_webhook_payload(channel, payload, raw)
         return {"status": "ok"}
 
     @app.post("/webhook")
-    async def whatsapp_webhook(
-        request: Request, background_tasks: BackgroundTasks
-    ) -> dict[str, str]:
-        return await receive_webhook("whatsapp", request, background_tasks)
+    async def whatsapp_webhook(request: Request) -> dict[str, str]:
+        return await receive_webhook("whatsapp", request)
 
     @app.post("/webhooks/{channel}")
-    async def channel_webhook(
-        channel: str, request: Request, background_tasks: BackgroundTasks
-    ) -> dict[str, str]:
-        return await receive_webhook(channel, request, background_tasks)
+    async def channel_webhook(channel: str, request: Request) -> dict[str, str]:
+        return await receive_webhook(channel, request)
 
     def verify_channel_webhook(
         channel: str,

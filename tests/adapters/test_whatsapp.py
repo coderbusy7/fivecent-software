@@ -58,6 +58,47 @@ def test_normalize_project_md_payload() -> None:
     assert events[0].tenant_id == "port-vauban"
 
 
+def test_normalize_live_meta_hi_payload() -> None:
+    payload = {
+        "object": "whatsapp_business_account",
+        "entry": [
+            {
+                "id": "2093966711993530",
+                "changes": [
+                    {
+                        "value": {
+                            "messaging_product": "whatsapp",
+                            "metadata": {
+                                "display_phone_number": "15552014794",
+                                "phone_number_id": "1350102171528381",
+                            },
+                            "contacts": [{"wa_id": "33621611871"}],
+                            "messages": [
+                                {
+                                    "from": "33621611871",
+                                    "id": "wamid.test-hi",
+                                    "timestamp": "1792605379",
+                                    "text": {"body": "Hi"},
+                                    "type": "text",
+                                    "from_user_id": "FR.1078108675065602",
+                                }
+                            ],
+                        },
+                        "field": "messages",
+                    }
+                ],
+            }
+        ],
+    }
+    events = normalize_whatsapp_payload(
+        payload, tenant_for_phone_number_id=lambda pid: "port-vauban" if pid == "1350102171528381" else None
+    )
+    assert len(events) == 1
+    assert events[0].text == "Hi"
+    assert events[0].user_channel_id == "33621611871"
+    assert events[0].tenant_id == "port-vauban"
+
+
 def test_unknown_phone_number_dropped() -> None:
     events = normalize_whatsapp_payload(SAMPLE, tenant_for_phone_number_id=lambda pid: None)
     assert events == []
