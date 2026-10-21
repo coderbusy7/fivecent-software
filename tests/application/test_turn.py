@@ -162,36 +162,16 @@ async def test_scripted_tool_quote(container) -> None:
     assert llm.calls[0]["model"] == "gpt-4o-mini"
 
 
-async def test_off_topic_skips_llm_and_handoffs_after_three(container) -> None:
+async def test_off_topic_reaches_llm(container) -> None:
     llm = container.providers.get("openai")
     assert isinstance(llm, ScriptedLLM)
-    first = await handle_turn(
-            _event(provider_message_id="wamid.off.1", text="What's the weather in Munnar?"),
+    result = await handle_turn(
+        _event(provider_message_id="wamid.off.1", text="What's the weather in Munnar?"),
         container,
     )
-    second = await handle_turn(
-        _event(provider_message_id="wamid.off.2", text="Tell me a joke"),
-        container,
-    )
-    third = await handle_turn(
-        _event(provider_message_id="wamid.off.3", text="Who won the match?"),
-        container,
-    )
-    fourth = await handle_turn(
-        _event(provider_message_id="wamid.off.4", text="Still there?"),
-        container,
-    )
-
-    assert first.skipped is False
-    assert "I only handle yacht charters" in (first.reply or "")
-    assert "handing you" not in (first.reply or "")
-    assert "I only handle yacht charters" in (second.reply or "")
-    assert "broker" in (second.reply or "").lower()
-    assert third.skipped is False
-    assert "+33600000000" in (third.reply or "")
-    assert "Elena desk" in (third.reply or "")
-    assert fourth.reason == "hitl"
-    assert llm.calls == []
+    assert result.skipped is False
+    assert result.reply == "How can I help with a charter?"
+    assert llm.calls
 
 
 async def test_tenant_model_is_selected_for_each_turn(container) -> None:

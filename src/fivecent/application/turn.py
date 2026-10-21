@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Optional
@@ -9,10 +10,14 @@ from uuid import uuid4
 from fivecent.application.orchestrator import orchestrate
 from fivecent.application.ports import Container, LockBusy
 from fivecent.domain.events import InboundMessageEvent
-from fivecent.services.plugin_yachting.guardrails import is_greeting
 
 logger = logging.getLogger(__name__)
 WINDOW_LIMIT = 15
+_GREETING = re.compile(
+    r"^(hi|hello|hey|yo|bonjour|bonsoir|salut|coucou|good (morning|afternoon|evening))"
+    r"[\s!,.]*$",
+    re.IGNORECASE,
+)
 
 
 @dataclass
@@ -153,8 +158,12 @@ async def handle_turn(event: InboundMessageEvent, container: Container) -> TurnR
         raise
 
 
+def _is_greeting(text: str) -> bool:
+    return bool(_GREETING.match((text or "").strip()))
+
+
 def _should_skip_repeat_greeting(history: list[dict], user_text: str) -> bool:
-    if not is_greeting(user_text) or not history:
+    if not _is_greeting(user_text) or not history:
         return False
     if not any(turn.get("role") == "assistant" for turn in history):
         return False
@@ -162,7 +171,7 @@ def _should_skip_repeat_greeting(history: list[dict], user_text: str) -> bool:
         (turn.get("content") for turn in reversed(history) if turn.get("role") == "user"),
         None,
     )
-    return last_user is None or is_greeting(str(last_user))
+    return last_user is None or _is_greeting(str(last_user))
 
 
 def new_test_message_id() -> str:

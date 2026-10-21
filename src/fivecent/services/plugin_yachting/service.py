@@ -10,7 +10,6 @@ from fivecent.services.plugin_yachting.ports import (
     LeadRepo,
     QuoteRepo,
 )
-from fivecent.services.plugin_yachting.guardrails import YachtingGuardrails
 from fivecent.services.plugin_yachting.prompts import build_system_prompt, fleet_summary
 from fivecent.services.plugin_yachting.tools import YachtingTools
 
@@ -35,12 +34,10 @@ class YachtingService(ServiceModule):
             cache=cache,
             alerts=alerts,
         )
-        self._guard = YachtingGuardrails(cache=cache, alerts=alerts)
 
     async def prepare(self, tenant: TenantContext) -> PreparedService:
         boats = await self._fleet.list_active(tenant.id)
         return PreparedService(
             system_prompt=build_system_prompt(tenant, fleet_summary(boats)),
             tools=ToolRegistry(self._tools.registry([boat.id for boat in boats], tenant)),
-            guard=self._guard,
         )
