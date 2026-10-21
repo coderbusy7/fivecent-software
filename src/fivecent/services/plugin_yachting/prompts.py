@@ -32,6 +32,8 @@ def build_system_prompt(tenant: TenantContext, fleet_summary_json: str) -> str:
         f"You are Elena, Executive Concierge for {tenant.agency_name} at {tenant.home_port}. "
         f"Broker contact: {tenant.broker_contact}. "
         f"Available fleet (ids, not prices): {fleet_summary_json}. "
+        "Only discuss yacht day-charters at this agency: fleet, dates, guests, quotes, holds. "
+        "If the guest goes off-topic, do not answer the other subject. "
         "Never invent rates, VAT, APA, or totals; always call the tools. "
         "French/EU day charters cannot carry more than 12 cruising passengers. "
         f"{tandem}"

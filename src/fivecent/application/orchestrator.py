@@ -27,11 +27,31 @@ async def orchestrate(
     conversation_id: str,
     history: list[dict],
     user_text: str,
+    channel: str,
+    user_channel_id: str,
 ) -> OrchestrationResult:
     started = time.perf_counter()
     service_module = container.services.get(tenant.service_type)
     provider = container.providers.get(tenant.llm_provider)
     service = await service_module.prepare(tenant)
+    if service.guard is not None:
+        canned = await service.guard.evaluate(
+            tenant=tenant,
+            history=history,
+            user_text=user_text,
+            conversation_id=conversation_id,
+            channel=channel,
+            user_channel_id=user_channel_id,
+        )
+        if canned:
+            latency_ms = int((time.perf_counter() - started) * 1000)
+            return OrchestrationResult(
+                reply=canned,
+                tokens_in=0,
+                tokens_out=0,
+                latency_ms=latency_ms,
+                tools=["scope_guardrail"],
+            )
     tool_context = ToolContext(tenant=tenant, conversation_id=conversation_id)
     messages = [
         ChatMessage(role="system", content=service.system_prompt),

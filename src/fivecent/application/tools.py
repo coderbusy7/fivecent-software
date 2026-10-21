@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from typing import Any, Awaitable, Callable, Protocol
+from typing import Any, Awaitable, Callable, Optional, Protocol
 
 from fivecent.domain.tenancy import TenantContext
 
@@ -62,10 +62,25 @@ class ToolRegistry:
             return json.dumps({"ok": False, "error": str(exc)})
 
 
+class TurnGuard(Protocol):
+    async def evaluate(
+        self,
+        *,
+        tenant: TenantContext,
+        history: list[dict],
+        user_text: str,
+        conversation_id: str,
+        channel: str,
+        user_channel_id: str,
+    ) -> Optional[str]:
+        """Return a canned reply to skip the LLM, or None to continue."""
+
+
 @dataclass(frozen=True)
 class PreparedService:
     system_prompt: str
     tools: ToolRegistry
+    guard: Optional[TurnGuard] = None
 
 
 class ServiceModule(Protocol):

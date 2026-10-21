@@ -84,6 +84,12 @@ async def handle_turn(event: InboundMessageEvent, container: Container) -> TurnR
                     event.tenant_id, event.channel, event.user_channel_id
                 )
             history = _window_key_turns(window)
+            if (
+                history
+                and history[-1].get("role") == "user"
+                and history[-1].get("content") == event.text
+            ):
+                history = history[:-1]
 
             result = await orchestrate(
                 container=container,
@@ -91,6 +97,8 @@ async def handle_turn(event: InboundMessageEvent, container: Container) -> TurnR
                 conversation_id=conversation_id,
                 history=history,
                 user_text=event.text,
+                channel=event.channel,
+                user_channel_id=event.user_channel_id,
             )
 
             outbound_id = await container.sender.send(

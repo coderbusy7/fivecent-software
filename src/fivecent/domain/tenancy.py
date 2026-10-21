@@ -113,8 +113,13 @@ class TenantContext:
         return self.agency_name
 
     @property
+    def primary_broker(self) -> Optional[Broker]:
+        active = self.active_brokers
+        return active[0] if active else None
+
+    @property
     def broker_contact(self) -> str:
-        active = [b for b in self.brokers if b.is_active]
+        active = self.active_brokers
         if not active:
             return "Broker desk"
         return ", ".join(f"{b.name} ({b.phone_number})" for b in active)
