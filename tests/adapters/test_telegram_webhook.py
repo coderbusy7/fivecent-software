@@ -10,7 +10,7 @@ from fivecent.api.app import create_app
 
 def _app(container, settings, *, token: str = "tg-secret"):
     settings.telegram_bot_token = token
-    settings.telegram_bot_username = "fivecent_dispatch_bot"
+    settings.telegram_bot_username = "fivecent_test_bot"
     settings.telegram_webhook_secret = "hook-secret"
     return create_app(container=container, settings=settings, phone_map={})
 
@@ -114,7 +114,7 @@ def test_webhook_secret_required(container, settings) -> None:
 
 def test_patch_tenant_and_broker_telegram(container, settings) -> None:
     settings.admin_api_token = "admin-secret"
-    settings.telegram_bot_username = "fivecent_dispatch_bot"
+    settings.telegram_bot_username = "fivecent_test_bot"
     app = create_app(container=container, settings=settings, phone_map={})
     headers = {"Authorization": "Bearer admin-secret"}
     with TestClient(app) as client:
@@ -127,7 +127,7 @@ def test_patch_tenant_and_broker_telegram(container, settings) -> None:
         body = patched.json()
         assert body["telegram_chat_id"] == "11223344"
         assert body["telegram_invite_link"] == (
-            "https://t.me/fivecent_dispatch_bot?start=port-vauban"
+            "https://t.me/fivecent_test_bot?start=port-vauban"
         )
 
         broker = client.post(

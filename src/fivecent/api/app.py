@@ -107,7 +107,7 @@ def create_app(
             },
             "telegram": {
                 "bot_token": bool(current.telegram_bot_token),
-                "bot_username": current.telegram_bot_username or "fivecent_dispatch_bot",
+                "bot_username": current.telegram_bot_username or "fivecent_test_bot",
                 "webhook_secret": bool(current.telegram_webhook_secret),
             },
         }

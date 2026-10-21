@@ -21,7 +21,7 @@ class Settings(BaseSettings):
     seed_tenant_id: str = "port-vauban"
     admin_api_token: str = ""
     telegram_bot_token: str = ""
-    telegram_bot_username: str = "fivecent_dispatch_bot"
+    telegram_bot_username: str = "fivecent_test_bot"
     telegram_webhook_secret: str = ""
     # Quiet window before coalescing rapid WhatsApp bursts into one orchestrator turn.
     # Set 0 to disable (tests / debugging).

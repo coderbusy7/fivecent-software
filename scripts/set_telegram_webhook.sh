@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Point @fivecent_dispatch_bot at the API webhook.
+# Point @fivecent_test_bot at the API webhook.
 # Usage:
 #   TELEGRAM_BOT_TOKEN=... TELEGRAM_WEBHOOK_SECRET=... ./scripts/set_telegram_webhook.sh
 #   API_BASE=https://fivecent-software.onrender.com ./scripts/set_telegram_webhook.sh

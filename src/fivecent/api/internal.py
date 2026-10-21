@@ -66,7 +66,7 @@ def _require_admin(settings: Settings, authorization: str) -> None:
         raise HTTPException(status_code=401, detail="Unauthorized.")
 
 
-def _serialize_tenant(ctx, *, telegram_bot_username: str = "fivecent_dispatch_bot") -> dict:
+def _serialize_tenant(ctx, *, telegram_bot_username: str = "fivecent_test_bot") -> dict:
     return {
         "tenant_id": ctx.id,
         "agency_name": ctx.agency_name,
@@ -116,7 +116,7 @@ def register_internal_routes(app, *, get_container, get_settings_fn) -> None:
         return repo
 
     def bot_username() -> str:
-        return get_settings_fn().telegram_bot_username or "fivecent_dispatch_bot"
+        return get_settings_fn().telegram_bot_username or "fivecent_test_bot"
 
     def serialize(ctx) -> dict:
         return _serialize_tenant(ctx, telegram_bot_username=bot_username())

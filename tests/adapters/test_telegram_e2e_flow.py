@@ -18,7 +18,7 @@ from fivecent.domain.events import InboundMessageEvent
 @pytest.mark.asyncio
 async def test_dispatch_bot_onboard_alert_mute_hitl(container, settings) -> None:
     settings.telegram_bot_token = "tg-token"
-    settings.telegram_bot_username = "fivecent_dispatch_bot"
+    settings.telegram_bot_username = "fivecent_test_bot"
     settings.telegram_webhook_secret = ""
     settings.admin_api_token = "admin-secret"
     app = create_app(container=container, settings=settings, phone_map={})
