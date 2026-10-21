@@ -106,13 +106,13 @@ ids = list(labels.keys())
 selected = st.selectbox(
     "Agency",
     options=ids,
-    format_func=lambda tid: labels.get(tid, tid),
+    format_func=lambda tid: labels.get(tid) or str(tid),
     index=0 if ids else None,
     placeholder="No agencies yet",
 )
 
-create_tab, identity_tab, money_tab, flags_tab, brokers_tab = st.tabs(
-    ["New agency", "Identity", "Money", "Flags", "Brokers"]
+create_tab, identity_tab, money_tab, ai_service_tab, flags_tab, brokers_tab = st.tabs(
+    ["New agency", "Identity", "Money", "AI & service", "Flags", "Brokers"]
 )
 
 with create_tab:
@@ -123,6 +123,9 @@ with create_tab:
         home_port = st.text_input("Home port", value="Port Vauban")
         phone_id = st.text_input("WhatsApp phone_number_id")
         waba_id = st.text_input("WhatsApp waba_id")
+        service_type = st.selectbox("Service type", options=["yachting"])
+        llm_provider = st.selectbox("LLM provider", options=["openai", "anthropic"])
+        llm_model = st.text_input("Model", value="gpt-4o-mini")
         submitted = st.form_submit_button("Create")
     if submitted:
         response = api_request(
@@ -134,6 +137,9 @@ with create_tab:
                 "home_port": home_port.strip(),
                 "whatsapp_phone_number_id": phone_id.strip(),
                 "whatsapp_waba_id": waba_id.strip(),
+                "service_type": service_type,
+                "llm_provider": llm_provider,
+                "llm_model": llm_model.strip(),
             },
         )
         if response is None:
@@ -215,6 +221,43 @@ with money_tab:
             st.stop()
         if response.is_success:
             st.success("Saved money rules")
+            st.rerun()
+        else:
+            _error(response)
+
+with ai_service_tab:
+    st.subheader("Service and reasoning provider")
+    with st.form("ai_service"):
+        service_type = st.selectbox(
+            "Service type",
+            options=["yachting"],
+            index=0,
+            help="Only registered service modules can be selected.",
+        )
+        llm_provider = st.selectbox(
+            "LLM provider",
+            options=["openai", "anthropic"],
+            index=0 if tenant["llm_provider"] == "openai" else 1,
+        )
+        llm_model = st.text_input(
+            "Model",
+            value=str(tenant.get("llm_model") or "gpt-4o-mini"),
+        ) or ""
+        save_ai_service = st.form_submit_button("Save AI and service")
+    if save_ai_service:
+        response = api_request(
+            "PATCH",
+            f"/internal/tenants/{selected}",
+            json={
+                "service_type": service_type,
+                "llm_provider": llm_provider,
+                "llm_model": llm_model.strip(),
+            },
+        )
+        if response is None:
+            st.stop()
+        if response.is_success:
+            st.success("Saved AI and service settings")
             st.rerun()
         else:
             _error(response)

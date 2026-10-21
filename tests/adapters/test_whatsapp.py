@@ -137,3 +137,30 @@ def test_verify_webhook_handshake(container, settings) -> None:
         )
         assert response.status_code == 200
         assert response.text == "challenge-token"
+
+
+def test_registered_channel_route_accepts_whatsapp(container, settings) -> None:
+    queue = ListQueue()
+    container.queue = queue
+    app = create_app(
+        container=container,
+        settings=settings,
+        phone_map={settings.whatsapp_phone_number_id: settings.seed_tenant_id},
+    )
+    body = json.dumps(SAMPLE).encode()
+    digest = hmac.new(settings.whatsapp_app_secret.encode(), body, hashlib.sha256).hexdigest()
+    with TestClient(app) as client:
+        response = client.post(
+            "/webhooks/whatsapp",
+            content=body,
+            headers={"X-Hub-Signature-256": f"sha256={digest}"},
+        )
+        assert response.status_code == 200
+        assert len(queue.events) == 1
+
+
+def test_unregistered_channel_webhook_returns_404(container, settings) -> None:
+    app = create_app(container=container, settings=settings, phone_map={})
+    with TestClient(app) as client:
+        response = client.post("/webhooks/instagram", content=b"{}")
+    assert response.status_code == 404

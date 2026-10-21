@@ -104,6 +104,9 @@ class TenantContext:
     feature_flags: FeatureFlags
     brokers: tuple[Broker, ...] = field(default_factory=tuple)
     is_active: bool = True
+    service_type: str = "yachting"
+    llm_provider: str = "openai"
+    llm_model: str = "gpt-4o-mini"
 
     @property
     def name(self) -> str:

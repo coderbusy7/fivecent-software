@@ -4,32 +4,12 @@ from decimal import Decimal
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from fivecent.adapters.persistence.models import Broker, FleetInventory, Tenant
+from fivecent.adapters.persistence.models import Broker, Tenant
 from fivecent.config import Settings
 from fivecent.domain.tenancy import DEFAULT_FEATURE_FLAGS
+from fivecent.services.yachting.persistence.seed import seed_fleet
 
 SEED_TENANT_ID = "port-vauban"
-
-FLEET = (
-    {
-        "id": "lagoon-450",
-        "name": "Lagoon 450",
-        "length_m": Decimal("13.96"),
-        "capacity": 12,
-        "low_season_daily_rate": Decimal("1800.00"),
-        "high_season_daily_rate": Decimal("2200.00"),
-        "skipper_daily_rate": Decimal("350.00"),
-    },
-    {
-        "id": "sunseeker-60",
-        "name": "Sunseeker 60",
-        "length_m": Decimal("18.90"),
-        "capacity": 12,
-        "low_season_daily_rate": Decimal("3800.00"),
-        "high_season_daily_rate": Decimal("4800.00"),
-        "skipper_daily_rate": Decimal("450.00"),
-    },
-)
 
 
 async def seed_if_empty(sessions: async_sessionmaker[AsyncSession], settings: Settings) -> None:
@@ -47,6 +27,9 @@ async def seed_if_empty(sessions: async_sessionmaker[AsyncSession], settings: Se
                     default_vat_rate=Decimal("0.20"),
                     default_apa_rate=Decimal("0.30"),
                     max_discount_pct=Decimal("0.08"),
+                    service_type="yachting",
+                    llm_provider="openai",
+                    llm_model=settings.openai_model,
                     routing_mode="broadcast",
                     feature_flags=dict(DEFAULT_FEATURE_FLAGS),
                     is_active=True,
@@ -72,13 +55,5 @@ async def seed_if_empty(sessions: async_sessionmaker[AsyncSession], settings: Se
                 )
             )
 
-        for boat in FLEET:
-            found = await session.execute(
-                select(FleetInventory).where(
-                    FleetInventory.id == boat["id"],
-                    FleetInventory.tenant_id == settings.seed_tenant_id,
-                )
-            )
-            if found.scalar_one_or_none() is None:
-                session.add(FleetInventory(tenant_id=settings.seed_tenant_id, active=True, **boat))
+        await seed_fleet(session, settings.seed_tenant_id)
         await session.commit()

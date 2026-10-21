@@ -20,6 +20,9 @@ class TenantCreate(BaseModel):
     vat_rate: Decimal = Decimal("0.20")
     apa_rate: Decimal = Decimal("0.30")
     max_discount_pct: Decimal = Decimal("0.08")
+    service_type: str = Field(default="yachting", min_length=1, max_length=64)
+    llm_provider: str = Field(default="openai", min_length=1, max_length=64)
+    llm_model: str = Field(default="gpt-4o-mini", min_length=1, max_length=128)
     routing_mode: str = "broadcast"
     feature_flags: Optional[dict] = None
 
@@ -33,6 +36,9 @@ class TenantPatch(BaseModel):
     vat_rate: Optional[Decimal] = None
     apa_rate: Optional[Decimal] = None
     max_discount_pct: Optional[Decimal] = None
+    service_type: Optional[str] = Field(default=None, min_length=1, max_length=64)
+    llm_provider: Optional[str] = Field(default=None, min_length=1, max_length=64)
+    llm_model: Optional[str] = Field(default=None, min_length=1, max_length=128)
     routing_mode: Optional[str] = None
     feature_flags: Optional[dict] = None
     is_active: Optional[bool] = None
@@ -69,6 +75,9 @@ def _serialize_tenant(ctx) -> dict:
         "vat_rate": str(ctx.vat_rate),
         "apa_rate": str(ctx.apa_rate),
         "max_discount_pct": str(ctx.max_discount_pct),
+        "service_type": ctx.service_type,
+        "llm_provider": ctx.llm_provider,
+        "llm_model": ctx.llm_model,
         "routing_mode": ctx.routing_mode,
         "feature_flags": ctx.feature_flags.as_dict(),
         "is_active": ctx.is_active,
@@ -100,12 +109,20 @@ def register_internal_routes(app, *, get_container, get_settings_fn) -> None:
             raise HTTPException(status_code=500, detail="Tenant admin is unavailable.")
         return repo
 
+    def validate_plugins(service_type: str, llm_provider: str) -> None:
+        container: Container = get_container()
+        if service_type not in container.services.keys:
+            raise HTTPException(status_code=422, detail="Service type is not configured.")
+        if llm_provider not in container.providers.keys:
+            raise HTTPException(status_code=422, detail="LLM provider is not configured.")
+
     @router.get("/tenants", dependencies=[Depends(admin)])
     async def list_tenants() -> list[dict]:
         return [_serialize_tenant(ctx) for ctx in await tenants().list_all()]
 
     @router.post("/tenants", dependencies=[Depends(admin)])
     async def create_tenant(payload: TenantCreate) -> dict:
+        validate_plugins(payload.service_type, payload.llm_provider)
         repo = tenants()
         if await repo.get(payload.tenant_id):
             raise HTTPException(status_code=409, detail="Tenant already exists.")
@@ -119,6 +136,9 @@ def register_internal_routes(app, *, get_container, get_settings_fn) -> None:
             vat_rate=payload.vat_rate,
             apa_rate=payload.apa_rate,
             max_discount_pct=payload.max_discount_pct,
+            service_type=payload.service_type,
+            llm_provider=payload.llm_provider,
+            llm_model=payload.llm_model,
             routing_mode=payload.routing_mode,
             feature_flags=payload.feature_flags,
         )
@@ -133,6 +153,13 @@ def register_internal_routes(app, *, get_container, get_settings_fn) -> None:
 
     @router.patch("/tenants/{tenant_id}", dependencies=[Depends(admin)])
     async def patch_tenant(tenant_id: str, payload: TenantPatch) -> dict:
+        current = await tenants().get(tenant_id)
+        if current is None:
+            raise HTTPException(status_code=404, detail="Tenant not found.")
+        validate_plugins(
+            payload.service_type or current.service_type,
+            payload.llm_provider or current.llm_provider,
+        )
         ctx = await tenants().update_tenant(tenant_id, **payload.model_dump(exclude_unset=True))
         if ctx is None:
             raise HTTPException(status_code=404, detail="Tenant not found.")

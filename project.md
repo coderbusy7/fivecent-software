@@ -304,3 +304,13 @@ To explore these advanced capabilities, check out the "Learn more" section below
 - [Onboard WhatsApp Business app users](https://developers.facebook.com/documentation/business-messaging/whatsapp/embedded-signup/onboarding-business-app-users) — allow businesses already using the WhatsApp Business app to connect their existing account and phone number to Cloud API via Embedded Signup
 - [Become a partner](https://developers.facebook.com/documentation/business-messaging/whatsapp/solution-providers/overview)
 - [View WhatsApp API OpenAPI Specification](https://github.com/facebook/openapi)
+
+---
+
+## Current extension boundaries
+
+- `application/` owns neutral chat messages, tool execution, and plugin registries.
+- `services/yachting/` owns yacht-specific prompts, schemas, and tool handlers. Add future industries as service modules and register them in `composition.py`.
+- `adapters/llm/` translates the neutral LLM contract to provider APIs. OpenAI and Anthropic are supported; provider and model are selected per tenant through the internal admin API. Configure `OPENAI_API_KEY` and/or `ANTHROPIC_API_KEY` to enable each provider.
+- `adapters/inbound/registry.py` dispatches webhook verification and parsing by channel key. WhatsApp is registered today; other channels must implement both inbound and outbound adapters before activation.
+- Tenant service/provider/model fields are added by Alembic revision `0003_tenant_plugins`. Run `alembic upgrade head` before deploying the application version that uses them.

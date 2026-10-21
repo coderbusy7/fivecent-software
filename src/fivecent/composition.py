@@ -2,26 +2,35 @@ from __future__ import annotations
 
 from typing import Optional
 
+from anthropic import AsyncAnthropic
 from openai import AsyncOpenAI
 from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
 from fivecent.adapters.cache.memory import MemoryCache
 from fivecent.adapters.cache.redis_store import RedisCache
-from fivecent.adapters.llm.openai_chat import OpenAIChat, ScriptedLLM
-from fivecent.adapters.outbound.whatsapp import CompositeSender, LogBrokerAlerts, WhatsAppSender
+from fivecent.adapters.llm.anthropic_chat import AnthropicChat
+from fivecent.adapters.llm.openai_chat import OpenAIChat
+from fivecent.adapters.outbound.whatsapp import (
+    ChannelSenderRegistry,
+    LogBrokerAlerts,
+    OutboundChannel,
+    TestChannelSender,
+    WhatsAppSender,
+)
 from fivecent.adapters.persistence.engine import make_engine, make_sessionmaker
-from fivecent.adapters.persistence.repos import (
-    SqlConversationRepo,
+from fivecent.adapters.persistence.repos import SqlConversationRepo, SqlTenantRepo
+from fivecent.adapters.queue.inline import InlineQueue
+from fivecent.application.ports import CachePort, ChannelSender, Container, LLMPort, MessageQueue
+from fivecent.application.registry import PluginRegistry
+from fivecent.config import Settings
+from fivecent.services.yachting import YachtingService
+from fivecent.services.yachting.persistence import (
     SqlFleetRepo,
     SqlHoldRepo,
     SqlLeadRepo,
     SqlQuoteRepo,
-    SqlTenantRepo,
 )
-from fivecent.adapters.queue.inline import InlineQueue
-from fivecent.application.ports import CachePort, ChannelSender, Container, LLMPort, MessageQueue
-from fivecent.config import Settings
 
 
 class AppContainer(Container):
@@ -31,10 +40,7 @@ class AppContainer(Container):
 
     async def aclose(self) -> None:
         for closer in self._closers:
-            try:
-                await closer()
-            except RuntimeError:
-                pass
+            await closer()
 
 
 async def build_container(
@@ -78,16 +84,24 @@ async def build_container(
         else:
             queue = InlineQueue()
 
-    if llm is None:
-        if settings.openai_api_key:
-            llm = OpenAIChat(
-                AsyncOpenAI(api_key=settings.openai_api_key, timeout=30.0, max_retries=1),
-                settings.openai_model,
-            )
-        else:
-            llm = ScriptedLLM()
+    providers: dict[str, LLMPort] = {}
+    if llm is not None:
+        providers["openai"] = llm
+    elif settings.openai_api_key:
+        openai_client = AsyncOpenAI(
+            api_key=settings.openai_api_key, timeout=30.0, max_retries=1
+        )
+        providers["openai"] = OpenAIChat(openai_client)
+        closers.append(openai_client.close)
+    if settings.anthropic_api_key:
+        anthropic_client = AsyncAnthropic(
+            api_key=settings.anthropic_api_key, timeout=30.0, max_retries=1
+        )
+        providers["anthropic"] = AnthropicChat(anthropic_client)
+        closers.append(anthropic_client.close)
 
     if sender is None:
+        channels: dict[str, OutboundChannel] = {"test": TestChannelSender()}
         whatsapp = None
         if settings.whatsapp_access_token:
             whatsapp = WhatsAppSender(
@@ -96,22 +110,32 @@ async def build_container(
                 graph_version=settings.whatsapp_graph_version,
             )
             closers.append(whatsapp.aclose)
-        sender = CompositeSender(whatsapp)
+            channels["whatsapp"] = whatsapp
+        sender = ChannelSenderRegistry(channels)
 
+    fleet_repo = SqlFleetRepo(sessions)
+    hold_repo = SqlHoldRepo(sessions)
+    quote_repo = SqlQuoteRepo(sessions)
+    lead_repo = SqlLeadRepo(sessions)
+    alert_port = LogBrokerAlerts()
     container = AppContainer(
         cache=cache,
         queue=queue,
         sender=sender,
-        alerts=LogBrokerAlerts(),
         tenants=SqlTenantRepo(sessions),
-        fleet=SqlFleetRepo(sessions),
-        holds=SqlHoldRepo(sessions),
-        quotes=SqlQuoteRepo(sessions),
-        leads=SqlLeadRepo(sessions),
         conversations=SqlConversationRepo(sessions),
-        llm=llm,
+        providers=PluginRegistry(providers),
+        services=PluginRegistry({
+            "yachting": YachtingService(
+                fleet=fleet_repo,
+                holds=hold_repo,
+                quotes=quote_repo,
+                leads=lead_repo,
+                cache=cache,
+                alerts=alert_port,
+            ),
+        }),
         seed_tenant_id=settings.seed_tenant_id,
-        whatsapp_phone_number_id=settings.whatsapp_phone_number_id,
         closers=closers,
     )
     if isinstance(queue, InlineQueue):

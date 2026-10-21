@@ -1,9 +1,9 @@
 from datetime import datetime, timezone
 from decimal import Decimal
 
-from fivecent.domain.quoting import QuoteBreakdown, calculate_itemized_quote
 from fivecent.domain.tenancy import FeatureFlags, TenantContext, is_after_hours
-from tests.domain.test_quoting import LAGOON
+from fivecent.services.yachting.domain.quoting import QuoteBreakdown, calculate_itemized_quote
+from tests.services.yachting.test_quoting import LAGOON
 
 
 def _tenant(**flags) -> TenantContext:

@@ -33,6 +33,9 @@ def _context(row: Tenant, brokers: list[BrokerRow]) -> TenantContext:
         max_discount_pct=Decimal(row.max_discount_pct),
         routing_mode=routing,  # type: ignore[arg-type]
         feature_flags=FeatureFlags.from_mapping(flags),
+        service_type=row.service_type or "yachting",
+        llm_provider=row.llm_provider or "openai",
+        llm_model=row.llm_model or "gpt-4o-mini",
         brokers=tuple(
             Broker(
                 id=b.id,
@@ -51,7 +54,7 @@ def _context(row: Tenant, brokers: list[BrokerRow]) -> TenantContext:
 class SqlTenantRepo:
     def __init__(self, sessions: async_sessionmaker[AsyncSession]) -> None:
         self._sessions = sessions
-        self._routing_cache: Optional[tuple[float, dict[str, str]]] = None
+        self._routing_cache: dict[str, tuple[float, dict[str, str]]] = {}
 
     async def list_all(self) -> list[TenantContext]:
         async with self._sessions() as session:
@@ -75,21 +78,31 @@ class SqlTenantRepo:
         return mapping.get(phone_number_id)
 
     async def whatsapp_routing_map(self) -> dict[str, str]:
+        return await self.channel_routing_map("whatsapp")
+
+    async def channel_routing_map(self, channel: str) -> dict[str, str]:
         from time import time
 
         now = time()
-        if self._routing_cache and self._routing_cache[0] > now:
-            return self._routing_cache[1]
+        cached = self._routing_cache.get(channel)
+        if cached and cached[0] > now:
+            return cached[1]
+        columns = {
+            "whatsapp": Tenant.whatsapp_phone_number_id,
+            "instagram": Tenant.instagram_account_id,
+            "messenger": Tenant.messenger_page_id,
+        }
+        column = columns.get(channel)
+        if column is None:
+            return {}
         async with self._sessions() as session:
-            result = await session.execute(
-                select(Tenant.id, Tenant.whatsapp_phone_number_id).where(Tenant.is_active.is_(True))
-            )
+            result = await session.execute(select(Tenant.id, column).where(Tenant.is_active.is_(True)))
             mapping = {phone: tenant_id for tenant_id, phone in result.all() if phone}
-        self._routing_cache = (now + 30, mapping)
+        self._routing_cache[channel] = (now + 30, mapping)
         return mapping
 
     def invalidate_routing(self) -> None:
-        self._routing_cache = None
+        self._routing_cache.clear()
 
     async def create_tenant(
         self,
@@ -103,6 +116,9 @@ class SqlTenantRepo:
         vat_rate: Decimal = Decimal("0.20"),
         apa_rate: Decimal = Decimal("0.30"),
         max_discount_pct: Decimal = Decimal("0.08"),
+        service_type: str = "yachting",
+        llm_provider: str = "openai",
+        llm_model: str = "gpt-4o-mini",
         routing_mode: str = "broadcast",
         feature_flags: Optional[dict] = None,
     ) -> TenantContext:
@@ -119,6 +135,9 @@ class SqlTenantRepo:
                     default_vat_rate=vat_rate,
                     default_apa_rate=apa_rate,
                     max_discount_pct=max_discount_pct,
+                    service_type=service_type,
+                    llm_provider=llm_provider,
+                    llm_model=llm_model,
                     routing_mode=routing_mode,
                     feature_flags=flags,
                     is_active=True,
@@ -145,6 +164,9 @@ class SqlTenantRepo:
                 "vat_rate": "default_vat_rate",
                 "apa_rate": "default_apa_rate",
                 "max_discount_pct": "max_discount_pct",
+                "service_type": "service_type",
+                "llm_provider": "llm_provider",
+                "llm_model": "llm_model",
                 "routing_mode": "routing_mode",
                 "feature_flags": "feature_flags",
                 "is_active": "is_active",

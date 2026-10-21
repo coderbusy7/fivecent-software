@@ -5,18 +5,18 @@ import logging
 from contextlib import asynccontextmanager
 from typing import Optional
 
-from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi import BackgroundTasks, FastAPI, HTTPException, Query, Request
 from fastapi.responses import PlainTextResponse
 
 from fivecent.adapters.inbound.http_chat import ChatInput, chat_to_event
-from fivecent.adapters.inbound.whatsapp import (
-    normalize_whatsapp_payload,
-    verify_signature,
-    verify_webhook_challenge,
+from fivecent.adapters.inbound.registry import (
+    WebhookAdapter,
+    create_webhook_registry,
 )
 from fivecent.adapters.persistence.engine import init_database, make_engine, make_sessionmaker
 from fivecent.api.internal import register_internal_routes
 from fivecent.application.ports import Container
+from fivecent.application.registry import PluginRegistry
 from fivecent.application.turn import handle_turn
 from fivecent.composition import build_container
 from fivecent.config import Settings, get_settings
@@ -35,15 +35,22 @@ def create_app(
     container: Optional[Container] = None,
     settings: Optional[Settings] = None,
     phone_map: Optional[dict[str, str]] = None,
+    webhook_adapters: Optional[PluginRegistry[WebhookAdapter]] = None,
 ) -> FastAPI:
     settings = settings or get_settings()
+    webhook_adapters = webhook_adapters or create_webhook_registry(
+        settings.whatsapp_app_secret, settings.whatsapp_verify_token
+    )
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         if container is not None:
             app.state.container = container
             app.state.settings = settings
-            app.state.phone_map = phone_map or _phone_map(settings)
+            app.state.phone_map = (
+                phone_map if phone_map is not None else _phone_map(settings)
+            )
+            app.state.webhook_adapters = webhook_adapters
             yield
             return
 
@@ -53,10 +60,9 @@ def create_app(
         built = await build_container(settings, engine=engine, sessions=sessions)
         app.state.container = built
         app.state.settings = settings
+        app.state.webhook_adapters = webhook_adapters
         mapping = _phone_map(settings)
-        tenant_id = await built.tenants.id_for_whatsapp_phone(settings.whatsapp_phone_number_id)
-        if tenant_id:
-            mapping[settings.whatsapp_phone_number_id] = tenant_id
+        mapping.update(await built.tenants.channel_routing_map("whatsapp"))
         app.state.phone_map = mapping
         yield
         await built.aclose()
@@ -82,6 +88,10 @@ def create_app(
         return {
             "ok": True,
             "openai": bool(current.openai_api_key),
+            "anthropic": bool(current.anthropic_api_key),
+            "llm_providers": list(app.state.container.providers.keys)
+            if hasattr(app.state, "container")
+            else [],
             "redis": bool(current.redis_url),
             "queue": (
                 "arq"
@@ -107,14 +117,45 @@ def create_app(
             return {"reply": "", "status": result.reason or "skipped"}
         return {"reply": result.reply or ""}
 
-    @app.post("/webhook")
-    async def webhook(request: Request) -> dict[str, str]:
-        current_settings: Settings = app.state.settings
+    async def process_webhook_payload(
+        channel: str, payload: dict, raw: bytes
+    ) -> None:
+        tenant_id: Optional[str] = None
+        try:
+            routing = await app.state.container.tenants.channel_routing_map(channel)
+            if channel == "whatsapp":
+                routing.update(app.state.phone_map)
+            events = app.state.webhook_adapters.get(channel).parse(
+                payload, tenant_for_account_id=routing.get
+            )
+            tenant_id = events[0].tenant_id if events else None
+            logger.info("webhook accepted events=%s tenant=%s", len(events), tenant_id)
+            current: Container = app.state.container
+            try:
+                await current.conversations.record_raw_inbound(
+                    tenant_id=tenant_id,
+                    channel=channel,
+                    body=raw.decode("utf-8", errors="replace"),
+                )
+            except Exception:
+                logger.exception("failed to store inbound webhook channel=%s", channel)
+            for event in events:
+                await current.queue.enqueue(event)
+        except Exception:
+            logger.exception("webhook processing failed channel=%s tenant=%s", channel, tenant_id)
+
+    async def receive_webhook(
+        channel: str, request: Request, background_tasks: BackgroundTasks
+    ) -> dict[str, str]:
+        try:
+            adapter = app.state.webhook_adapters.get(channel)
+        except LookupError as exc:
+            raise HTTPException(status_code=404, detail="Channel webhook is not configured.") from exc
+        if not adapter.configured:
+            raise HTTPException(status_code=503, detail="Channel webhook credentials are not configured.")
         raw = await request.body()
-        if not current_settings.whatsapp_app_secret:
-            raise HTTPException(status_code=503, detail="App secret not configured.")
         header = request.headers.get("X-Hub-Signature-256", "")
-        if not verify_signature(current_settings.whatsapp_app_secret, raw, header):
+        if not adapter.verify_signature(raw, header):
             raise HTTPException(status_code=403, detail="Invalid signature.")
         try:
             payload = json.loads(raw or b"{}")
@@ -122,41 +163,54 @@ def create_app(
             raise HTTPException(status_code=400, detail="Invalid JSON.") from exc
         if not isinstance(payload, dict):
             raise HTTPException(status_code=400, detail="Invalid JSON.")
-        routing = await app.state.container.tenants.whatsapp_routing_map()
-        routing.update(app.state.phone_map)
-        events = normalize_whatsapp_payload(
-            payload,
-            tenant_for_phone_number_id=lambda pid: routing.get(pid),
-        )
-        current: Container = app.state.container
-        tenant_id = events[0].tenant_id if events else None
-        logger.info("webhook accepted events=%s tenant=%s", len(events), tenant_id)
-        await current.conversations.record_raw_inbound(
-            tenant_id=tenant_id,
-            channel="whatsapp",
-            body=raw.decode("utf-8", errors="replace"),
-        )
-        try:
-            for event in events:
-                await current.queue.enqueue(event)
-        except Exception:
-            logger.exception("webhook turn failed events=%s tenant=%s", len(events), tenant_id)
-            raise
+        background_tasks.add_task(process_webhook_payload, channel, payload, raw)
         return {"status": "ok"}
 
-    @app.get("/webhook", response_class=PlainTextResponse)
-    def verify_webhook(
+    @app.post("/webhook")
+    async def whatsapp_webhook(
+        request: Request, background_tasks: BackgroundTasks
+    ) -> dict[str, str]:
+        return await receive_webhook("whatsapp", request, background_tasks)
+
+    @app.post("/webhooks/{channel}")
+    async def channel_webhook(
+        channel: str, request: Request, background_tasks: BackgroundTasks
+    ) -> dict[str, str]:
+        return await receive_webhook(channel, request, background_tasks)
+
+    def verify_channel_webhook(
+        channel: str,
         mode: str = Query(alias="hub.mode"),
         verify_token: str = Query(alias="hub.verify_token"),
         challenge: str = Query(alias="hub.challenge"),
     ) -> str:
-        expected = app.state.settings.whatsapp_verify_token
-        if not expected:
-            raise HTTPException(status_code=503, detail="Verification token not configured.")
-        result = verify_webhook_challenge(mode, verify_token, challenge, expected)
+        try:
+            adapter = app.state.webhook_adapters.get(channel)
+        except LookupError as exc:
+            raise HTTPException(status_code=404, detail="Channel webhook is not configured.") from exc
+        if not adapter.configured:
+            raise HTTPException(status_code=503, detail="Channel webhook credentials are not configured.")
+        result = adapter.verify_challenge(mode, verify_token, challenge)
         if result is None:
             raise HTTPException(status_code=403, detail="Verification failed.")
         return result
+
+    @app.get("/webhook", response_class=PlainTextResponse)
+    def verify_whatsapp_webhook(
+        mode: str = Query(alias="hub.mode"),
+        verify_token: str = Query(alias="hub.verify_token"),
+        challenge: str = Query(alias="hub.challenge"),
+    ) -> str:
+        return verify_channel_webhook("whatsapp", mode, verify_token, challenge)
+
+    @app.get("/webhooks/{channel}", response_class=PlainTextResponse)
+    def verify_channel(
+        channel: str,
+        mode: str = Query(alias="hub.mode"),
+        verify_token: str = Query(alias="hub.verify_token"),
+        challenge: str = Query(alias="hub.challenge"),
+    ) -> str:
+        return verify_channel_webhook(channel, mode, verify_token, challenge)
 
     register_internal_routes(
         app,

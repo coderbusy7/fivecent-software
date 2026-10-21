@@ -3,7 +3,7 @@ from datetime import date, datetime, timedelta
 from decimal import Decimal
 from typing import Optional, Sequence
 
-from fivecent.domain.quoting import Boat, DomainError
+from fivecent.services.yachting.domain.quoting import Boat, DomainError
 
 MAX_DAY_CHARTER_PAX = 12
 

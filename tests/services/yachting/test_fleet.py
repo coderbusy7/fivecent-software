@@ -1,8 +1,12 @@
 from datetime import date, datetime, timezone
 from decimal import Decimal
 
-from fivecent.domain.fleet import ActiveHold, MAX_DAY_CHARTER_PAX, check_fleet_availability
-from fivecent.domain.quoting import Boat
+from fivecent.services.yachting.domain.fleet import (
+    ActiveHold,
+    MAX_DAY_CHARTER_PAX,
+    check_fleet_availability,
+)
+from fivecent.services.yachting.domain.quoting import Boat
 
 LAGOON = Boat(
     id="lagoon-450",

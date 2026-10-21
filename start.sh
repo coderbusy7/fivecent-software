@@ -19,6 +19,8 @@ if [[ -f "$ROOT/.env" ]]; then
   set +a
 fi
 
+"$PYTHON" -m alembic upgrade head
+
 export ADMIN_API_TOKEN="${ADMIN_API_TOKEN:-dev-admin}"
 API_HOST="${API_HOST:-127.0.0.1}"
 API_PORT="${API_PORT:-8000}"

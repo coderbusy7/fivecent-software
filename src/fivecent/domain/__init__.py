@@ -1,1 +1,1 @@
-"""Pure domain: money, inventory, negotiation. No IO."""
+"""Kernel domain: tenancy and inbound events. Service catalogs live with each service."""

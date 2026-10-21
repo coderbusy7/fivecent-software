@@ -10,6 +10,7 @@ class Settings(BaseSettings):
     queue_backend: str = "inline"
     openai_api_key: str = ""
     openai_model: str = "gpt-4o-mini"
+    anthropic_api_key: str = ""
     whatsapp_verify_token: str = ""
     whatsapp_app_secret: str = ""
     whatsapp_access_token: str = ""

@@ -1,14 +1,32 @@
 from __future__ import annotations
 
 from contextlib import AbstractAsyncContextManager
-from datetime import date, datetime
-from decimal import Decimal
-from typing import Optional, Protocol, Sequence
+from dataclasses import dataclass
+from typing import Literal, Optional, Protocol, Sequence
 
+from fivecent.application.registry import PluginRegistry
+from fivecent.application.tools import ServiceModule, ToolCall, ToolSpec
 from fivecent.domain.events import Channel, InboundMessageEvent
-from fivecent.domain.fleet import ActiveHold
-from fivecent.domain.quoting import Boat, QuoteBreakdown
 from fivecent.domain.tenancy import TenantContext
+
+ChatRole = Literal["system", "user", "assistant", "tool"]
+ToolChoice = Literal["auto", "none"]
+
+
+@dataclass(frozen=True)
+class ChatMessage:
+    role: ChatRole
+    content: Optional[str] = None
+    tool_calls: tuple[ToolCall, ...] = ()
+    tool_call_id: Optional[str] = None
+
+
+@dataclass(frozen=True)
+class LLMResult:
+    content: Optional[str]
+    tool_calls: list[ToolCall]
+    tokens_in: int
+    tokens_out: int
 
 
 class LockBusy(Exception):
@@ -51,60 +69,10 @@ class ChannelSender(Protocol):
     ) -> str: ...
 
 
-class BrokerAlertPort(Protocol):
-    async def notify_hold(self, tenant_id: str, payload: dict) -> None: ...
-
-
 class TenantRepo(Protocol):
     async def get(self, tenant_id: str) -> Optional[TenantContext]: ...
 
-    async def id_for_whatsapp_phone(self, phone_number_id: str) -> Optional[str]: ...
-
-    async def whatsapp_routing_map(self) -> dict[str, str]: ...
-
-
-class FleetRepo(Protocol):
-    async def list_active(self, tenant_id: str) -> Sequence[Boat]: ...
-
-    async def get(self, tenant_id: str, boat_id: str) -> Optional[Boat]: ...
-
-
-class HoldRepo(Protocol):
-    async def list_active(self, tenant_id: str, now: datetime) -> Sequence[ActiveHold]: ...
-
-    async def create(
-        self,
-        *,
-        tenant_id: str,
-        boat_id: str,
-        start_date: date,
-        days: int,
-        expires_at: datetime,
-        lead_id: str,
-    ) -> None: ...
-
-
-class QuoteRepo(Protocol):
-    async def save(
-        self, *, tenant_id: str, conversation_id: str, quote_id: str, quote: QuoteBreakdown
-    ) -> None: ...
-
-    async def get(self, tenant_id: str, quote_id: str) -> Optional[QuoteBreakdown]: ...
-
-
-class LeadRepo(Protocol):
-    async def upsert_hold_lead(
-        self,
-        *,
-        tenant_id: str,
-        conversation_id: str,
-        customer_name: str,
-        email: str,
-        boat_id: str,
-        start_date: date,
-        days: int,
-        quote_id: Optional[str],
-    ) -> str: ...
+    async def channel_routing_map(self, channel: str) -> dict[str, str]: ...
 
 
 class ConversationRepo(Protocol):
@@ -135,32 +103,12 @@ class ConversationRepo(Protocol):
 class LLMPort(Protocol):
     async def complete(
         self,
-        messages: list[dict],
-        tools: list[dict],
+        messages: Sequence[ChatMessage],
+        tools: Sequence[ToolSpec],
         *,
-        tool_choice: str | dict = "auto",
+        model: str,
+        tool_choice: ToolChoice = "auto",
     ) -> LLMResult: ...
-
-
-class LLMResult:
-    def __init__(
-        self,
-        content: Optional[str],
-        tool_calls: list[LLMToolCall],
-        tokens_in: int,
-        tokens_out: int,
-    ) -> None:
-        self.content = content
-        self.tool_calls = tool_calls
-        self.tokens_in = tokens_in
-        self.tokens_out = tokens_out
-
-
-class LLMToolCall:
-    def __init__(self, id: str, name: str, arguments: str) -> None:
-        self.id = id
-        self.name = name
-        self.arguments = arguments
 
 
 class Container:
@@ -170,27 +118,17 @@ class Container:
         cache: CachePort,
         queue: MessageQueue,
         sender: ChannelSender,
-        alerts: BrokerAlertPort,
         tenants: TenantRepo,
-        fleet: FleetRepo,
-        holds: HoldRepo,
-        quotes: QuoteRepo,
-        leads: LeadRepo,
         conversations: ConversationRepo,
-        llm: LLMPort,
+        providers: PluginRegistry[LLMPort],
+        services: PluginRegistry[ServiceModule],
         seed_tenant_id: str,
-        whatsapp_phone_number_id: str,
     ) -> None:
         self.cache = cache
         self.queue = queue
         self.sender = sender
-        self.alerts = alerts
         self.tenants = tenants
-        self.fleet = fleet
-        self.holds = holds
-        self.quotes = quotes
-        self.leads = leads
         self.conversations = conversations
-        self.llm = llm
+        self.providers = providers
+        self.services = services
         self.seed_tenant_id = seed_tenant_id
-        self.whatsapp_phone_number_id = whatsapp_phone_number_id

@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 from uuid import uuid4
+from typing import Protocol
 
 import httpx
 
@@ -60,23 +61,30 @@ class WhatsAppSender:
             return str(messages[0]["id"])
         return f"wa-local-{uuid4()}"
 
+    async def send(self, tenant_id: str, user_channel_id: str, text: str) -> str:
+        return await self.send_whatsapp(user_channel_id, text)
 
-class CompositeSender:
-    def __init__(self, whatsapp: WhatsAppSender | None = None) -> None:
-        self._whatsapp = whatsapp
+
+class OutboundChannel(Protocol):
+    async def send(self, tenant_id: str, user_channel_id: str, text: str) -> str: ...
+
+
+class TestChannelSender:
+    async def send(self, tenant_id: str, user_channel_id: str, text: str) -> str:
+        return f"test-out-{uuid4()}"
+
+
+class ChannelSenderRegistry:
+    def __init__(self, channels: dict[str, OutboundChannel]) -> None:
+        self._channels = dict(channels)
 
     async def send(
         self, tenant_id: str, channel: Channel, user_channel_id: str, text: str
     ) -> str:
-        if channel == "test":
-            return f"test-out-{uuid4()}"
-        if channel == "whatsapp":
-            if self._whatsapp is None:
-                raise RuntimeError("WhatsApp sender is not configured.")
-            return await self._whatsapp.send_whatsapp(user_channel_id, text)
-        if channel in {"instagram", "messenger"}:
-            raise NotImplementedError(f"{channel} outbound is not implemented in this slice.")
-        raise ValueError(f"Unknown channel {channel}")
+        sender = self._channels.get(channel)
+        if sender is None:
+            raise ValueError(f"Outbound channel '{channel}' is not configured.")
+        return await sender.send(tenant_id, user_channel_id, text)
 
 
 class LogBrokerAlerts:

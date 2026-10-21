@@ -1,7 +1,13 @@
 from datetime import date
 from decimal import Decimal
 
-from fivecent.domain.quoting import Boat, DomainError, QuoteBreakdown, calculate_itemized_quote, season_for_stay
+from fivecent.services.yachting.domain.quoting import (
+    Boat,
+    DomainError,
+    QuoteBreakdown,
+    calculate_itemized_quote,
+    season_for_stay,
+)
 
 LAGOON = Boat(
     id="lagoon-450",

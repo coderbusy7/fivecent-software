@@ -1,9 +1,9 @@
 from datetime import datetime
-from typing import Literal, Optional
+from typing import Optional
 
 from pydantic import BaseModel, Field
 
-Channel = Literal["whatsapp", "instagram", "messenger", "test"]
+Channel = str
 
 
 class InboundMessageEvent(BaseModel):
