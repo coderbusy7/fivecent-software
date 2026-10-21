@@ -31,6 +31,16 @@ async def test_hitl_skips_llm(container) -> None:
     assert llm.calls == []
 
 
+async def test_repeat_greeting_does_not_send_again(container) -> None:
+    first = await handle_turn(_event(text="Hi"), container)
+    assert first.skipped is False
+    second = await handle_turn(
+        _event(text="Hi", provider_message_id="wamid.hi-2"), container
+    )
+    assert second.skipped is True
+    assert second.reason == "repeat_greeting"
+
+
 async def test_duplicate_wamid_skipped(container) -> None:
     first = await handle_turn(_event(), container)
     assert first.skipped is False
@@ -48,6 +58,26 @@ async def test_business_echo_sets_hitl(container) -> None:
     assert echo.reason == "echo"
     result = await handle_turn(_event(provider_message_id="wamid.2", text="Still here?"), container)
     assert result.reason == "hitl"
+
+
+async def test_request_broker_followup_tool(container) -> None:
+    conv = await container.conversations.claim_inbound(
+        _event(provider_message_id="wamid.followup"), "user"
+    )
+    tenant = await container.tenants.get("port-vauban")
+    prepared = await container.services.get("yachting").prepare(tenant)
+    raw = await prepared.tools.execute(
+        ToolCall(
+            id="call_fu",
+            name="request_broker_followup",
+            arguments='{"destination":"Monaco","contact_preference":"whatsapp","notes":"Aug weekend"}',
+        ),
+        ToolContext(tenant=tenant, conversation_id=conv),
+    )
+    payload = json.loads(raw)
+    assert payload["ok"] is True
+    assert payload["destination"] == "Monaco"
+    assert payload["contact_preference"] == "whatsapp"
 
 
 async def test_pax_cap_via_tool(container) -> None:
@@ -136,7 +166,7 @@ async def test_off_topic_skips_llm_and_handoffs_after_three(container) -> None:
     llm = container.providers.get("openai")
     assert isinstance(llm, ScriptedLLM)
     first = await handle_turn(
-        _event(provider_message_id="wamid.off.1", text="What's the weather in Monaco?"),
+            _event(provider_message_id="wamid.off.1", text="What's the weather in Munnar?"),
         container,
     )
     second = await handle_turn(

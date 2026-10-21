@@ -115,6 +115,31 @@ class YachtingTools:
             ),
             Tool(
                 ToolSpec(
+                    name="request_broker_followup",
+                    description=(
+                        "Ask the desk to WhatsApp or call the guest later about a destination "
+                        "or fleet we cannot confirm from tools (for example Monaco repositioning). "
+                        "Does not quote and does not book."
+                    ),
+                    parameters={
+                        "type": "object",
+                        "properties": {
+                            "destination": {"type": "string"},
+                            "contact_preference": {
+                                "type": "string",
+                                "enum": ["whatsapp", "call", "either"],
+                            },
+                            "notes": {"type": "string"},
+                            "customer_name": {"type": "string"},
+                        },
+                        "required": ["destination", "contact_preference"],
+                        "additionalProperties": False,
+                    },
+                ),
+                self.request_broker_followup,
+            ),
+            Tool(
+                ToolSpec(
                     name="escalate_and_soft_hold",
                     description=(
                         "Place a 24h option. Requires customer name and email. "
@@ -259,6 +284,27 @@ class YachtingTools:
             "floor_total": str(result.floor_total),
             "currency": quote.currency,
         })
+
+    async def request_broker_followup(
+        self, arguments: dict[str, Any], context: ToolContext
+    ) -> str:
+        destination = str(arguments.get("destination") or "").strip()
+        preference = str(arguments.get("contact_preference") or "").strip()
+        if not destination:
+            return _error("invalid_destination", "destination is required.")
+        if preference not in {"whatsapp", "call", "either"}:
+            return _error("invalid_preference", "contact_preference must be whatsapp, call, or either.")
+        payload = {
+            "ok": True,
+            "reason": "followup",
+            "destination": destination,
+            "contact_preference": preference,
+            "notes": str(arguments.get("notes") or "").strip(),
+            "customer_name": str(arguments.get("customer_name") or "").strip(),
+            "conversation_id": context.conversation_id,
+        }
+        await self._alerts.notify_followup(context.tenant.id, payload)
+        return json.dumps(payload)
 
     async def escalate_and_soft_hold(
         self, arguments: dict[str, Any], context: ToolContext

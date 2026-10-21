@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from contextlib import asynccontextmanager
@@ -10,6 +11,7 @@ from fastapi.responses import PlainTextResponse
 
 from fivecent.adapters.inbound.http_chat import ChatInput, chat_to_event
 from fivecent.messaging.factory import build_inbound_plugins
+from fivecent.messaging.plugin_whatsapp.callback import sync_waba_webhook_override
 from fivecent.messaging.graph import WebhookAdapter
 from fivecent.adapters.persistence.engine import init_database, make_engine, make_sessionmaker
 from fivecent.api.internal import register_internal_routes
@@ -60,7 +62,9 @@ def create_app(
         mapping = _phone_map(settings)
         mapping.update(await built.tenants.channel_routing_map("whatsapp"))
         app.state.phone_map = mapping
+        override_task = asyncio.create_task(sync_waba_webhook_override(settings))
         yield
+        override_task.cancel()
         await built.aclose()
         await engine.dispose()
 

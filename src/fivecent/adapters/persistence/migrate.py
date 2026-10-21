@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 from alembic import command
@@ -19,9 +20,14 @@ def _alembic_config() -> Config:
 
 
 def ensure_migrations(database_url: str) -> None:
-    """Apply Alembic on an existing Render DB that may have been created with create_all."""
+    """Apply Alembic on an existing DB that may have been created with create_all."""
+    if ":memory:" in database_url:
+        return
     sync_url = sync_database_url(database_url)
     cfg = _alembic_config()
+    cfg.set_main_option("sqlalchemy.url", sync_url)
+    previous = os.environ.get("DATABASE_URL")
+    os.environ["DATABASE_URL"] = database_url
     engine = create_engine(sync_url, connect_args=postgres_ssl_connect_args(sync_url))
     try:
         with engine.connect() as connection:
@@ -33,14 +39,16 @@ def ensure_migrations(database_url: str) -> None:
                     command.stamp(cfg, "head")
                     return
                 command.stamp(cfg, "0002_tenant_config")
+        command.upgrade(cfg, "head")
     finally:
         engine.dispose()
-    command.upgrade(cfg, "head")
+        if previous is None:
+            os.environ.pop("DATABASE_URL", None)
+        else:
+            os.environ["DATABASE_URL"] = previous
 
 
 def main() -> None:
-    import os
-
     url = os.environ.get("DATABASE_URL")
     if not url:
         raise RuntimeError("DATABASE_URL must be set.")

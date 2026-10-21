@@ -9,6 +9,7 @@ from uuid import uuid4
 from fivecent.application.orchestrator import orchestrate
 from fivecent.application.ports import Container, LockBusy
 from fivecent.domain.events import InboundMessageEvent
+from fivecent.services.plugin_yachting.guardrails import is_greeting
 
 logger = logging.getLogger(__name__)
 WINDOW_LIMIT = 15
@@ -38,18 +39,19 @@ async def handle_turn(event: InboundMessageEvent, container: Container) -> TurnR
     if conversation_id is None:
         return TurnResult(skipped=True, reason="duplicate")
 
+    if await container.cache.was_sent_by_bot(event.tenant_id, event.provider_message_id):
+        return TurnResult(skipped=True, reason="echo", conversation_id=conversation_id)
+
     if event.is_business_echo:
-        ours = await container.cache.was_sent_by_bot(event.tenant_id, event.provider_message_id)
-        if not ours:
-            await container.cache.set_human_active(
-                event.tenant_id, event.channel, event.user_channel_id
-            )
-            logger.info(
-                "HITL engaged tenant=%s user=%s msg=%s",
-                event.tenant_id,
-                event.user_channel_id,
-                event.provider_message_id,
-            )
+        await container.cache.set_human_active(
+            event.tenant_id, event.channel, event.user_channel_id
+        )
+        logger.info(
+            "HITL engaged tenant=%s user=%s msg=%s",
+            event.tenant_id,
+            event.user_channel_id,
+            event.provider_message_id,
+        )
         return TurnResult(skipped=True, reason="echo", conversation_id=conversation_id)
 
     if not event.text or not event.text.strip():
@@ -90,6 +92,15 @@ async def handle_turn(event: InboundMessageEvent, container: Container) -> TurnR
                 and history[-1].get("content") == event.text
             ):
                 history = history[:-1]
+            if _should_skip_repeat_greeting(history, event.text):
+                logger.info(
+                    "skip repeat greeting tenant=%s user=%s",
+                    event.tenant_id,
+                    event.user_channel_id,
+                )
+                return TurnResult(
+                    skipped=True, reason="repeat_greeting", conversation_id=conversation_id
+                )
 
             result = await orchestrate(
                 container=container,
@@ -140,6 +151,18 @@ async def handle_turn(event: InboundMessageEvent, container: Container) -> TurnR
     except Exception:
         logger.exception("turn failed tenant=%s msg=%s", event.tenant_id, event.provider_message_id)
         raise
+
+
+def _should_skip_repeat_greeting(history: list[dict], user_text: str) -> bool:
+    if not is_greeting(user_text) or not history:
+        return False
+    if not any(turn.get("role") == "assistant" for turn in history):
+        return False
+    last_user = next(
+        (turn.get("content") for turn in reversed(history) if turn.get("role") == "user"),
+        None,
+    )
+    return last_user is None or is_greeting(str(last_user))
 
 
 def new_test_message_id() -> str:

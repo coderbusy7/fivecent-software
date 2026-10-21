@@ -23,7 +23,7 @@ async def seed_if_empty(sessions: async_sessionmaker[AsyncSession], settings: Se
                     home_port="Port Vauban, Antibes",
                     currency="EUR",
                     whatsapp_phone_number_id=settings.whatsapp_phone_number_id or "seed-phone-number-id",
-                    whatsapp_waba_id="seed-waba-id",
+                    whatsapp_waba_id=settings.whatsapp_waba_id or "seed-waba-id",
                     default_vat_rate=Decimal("0.20"),
                     default_apa_rate=Decimal("0.30"),
                     max_discount_pct=Decimal("0.08"),
@@ -36,8 +36,11 @@ async def seed_if_empty(sessions: async_sessionmaker[AsyncSession], settings: Se
                     created_at=datetime.now(timezone.utc),
                 )
             )
-        elif settings.whatsapp_phone_number_id:
-            existing.whatsapp_phone_number_id = settings.whatsapp_phone_number_id
+        else:
+            if settings.whatsapp_phone_number_id:
+                existing.whatsapp_phone_number_id = settings.whatsapp_phone_number_id
+            if settings.whatsapp_waba_id:
+                existing.whatsapp_waba_id = settings.whatsapp_waba_id
 
         brokers = await session.execute(
             select(Broker).where(Broker.tenant_id == settings.seed_tenant_id)

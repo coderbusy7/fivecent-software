@@ -99,6 +99,38 @@ def test_normalize_live_meta_hi_payload() -> None:
     assert events[0].tenant_id == "port-vauban"
 
 
+def test_business_self_messages_are_dropped() -> None:
+    payload = {
+        "entry": [
+            {
+                "changes": [
+                    {
+                        "value": {
+                            "metadata": {
+                                "display_phone_number": "15552014794",
+                                "phone_number_id": "1350102171528381",
+                            },
+                            "messages": [
+                                {
+                                    "from": "15552014794",
+                                    "id": "wamid.self",
+                                    "timestamp": "1",
+                                    "type": "text",
+                                    "text": {"body": "Hello from the desk"},
+                                }
+                            ],
+                        }
+                    }
+                ]
+            }
+        ]
+    }
+    events = normalize_whatsapp_payload(
+        payload, tenant_for_phone_number_id=lambda pid: "port-vauban"
+    )
+    assert events == []
+
+
 def test_unknown_phone_number_dropped() -> None:
     events = normalize_whatsapp_payload(SAMPLE, tenant_for_phone_number_id=lambda pid: None)
     assert events == []

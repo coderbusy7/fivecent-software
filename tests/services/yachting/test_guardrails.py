@@ -32,17 +32,19 @@ def test_yachting_questions_are_in_scope() -> None:
     assert is_yachting_scope("bonjour")
     assert is_yachting_scope("ok")
     assert is_yachting_scope("8 guests on 2026-06-06")
+    assert is_yachting_scope("Is Monaco possible?")
+    assert is_yachting_scope("Can you call me later about Cannes?")
 
 
 def test_off_topic_questions_are_out_of_scope() -> None:
-    assert is_yachting_scope("What's the weather in Monaco?") is False
+    assert is_yachting_scope("What's the weather in Munnar?") is False
     assert is_yachting_scope("Write a python script") is False
     assert is_yachting_scope("Who won the football match?") is False
 
 
 def test_three_consecutive_off_topic_attempts() -> None:
     history = [
-        {"role": "user", "content": "What's the weather in Monaco?"},
+        {"role": "user", "content": "What's the weather in Munnar?"},
         {"role": "assistant", "content": "I only handle yacht charters at Port Vauban."},
         {"role": "user", "content": "Tell me a joke"},
         {"role": "assistant", "content": "I only handle yacht charters at Port Vauban."},
@@ -53,7 +55,7 @@ def test_three_consecutive_off_topic_attempts() -> None:
 
 def test_in_scope_message_resets_strikes() -> None:
     history = [
-        {"role": "user", "content": "What's the weather?"},
+        {"role": "user", "content": "What's the weather in Munnar?"},
         {"role": "assistant", "content": "I only handle yacht charters at Port Vauban."},
     ]
     assert consecutive_off_topic(history, "Can I charter a catamaran?") == 0

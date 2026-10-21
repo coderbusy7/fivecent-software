@@ -8,6 +8,12 @@ def test_render_postgres_url_uses_asyncpg() -> None:
     assert async_database_url("sqlite+aiosqlite:///./x.db") == "sqlite+aiosqlite:///./x.db"
 
 
+def test_ensure_migrations_skips_sqlite_memory() -> None:
+    from fivecent.adapters.persistence.migrate import ensure_migrations
+
+    ensure_migrations("sqlite+aiosqlite:///:memory:")
+
+
 def test_alembic_postgres_url_uses_psycopg() -> None:
     assert sync_database_url("postgresql://u:p@dpg-host/db").startswith("postgresql+psycopg://")
     assert sync_database_url("postgresql+asyncpg://u:p@h/db").startswith("postgresql+psycopg://")

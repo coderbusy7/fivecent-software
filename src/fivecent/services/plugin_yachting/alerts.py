@@ -12,3 +12,6 @@ class LogBrokerAlerts:
 
     async def notify_handoff(self, tenant_id: str, payload: dict) -> None:
         logger.info("broker handoff tenant=%s payload=%s", tenant_id, json.dumps(payload))
+
+    async def notify_followup(self, tenant_id: str, payload: dict) -> None:
+        logger.info("broker followup tenant=%s payload=%s", tenant_id, json.dumps(payload))

@@ -63,10 +63,10 @@ def make_sessionmaker(engine: AsyncEngine) -> async_sessionmaker[AsyncSession]:
 
 
 async def init_database(engine: AsyncEngine, sessions: async_sessionmaker[AsyncSession], settings: Settings) -> None:
-    if not settings.database_url.startswith("sqlite"):
-        from fivecent.adapters.persistence.migrate import ensure_migrations
+    from fivecent.adapters.persistence.migrate import ensure_migrations
 
-        ensure_migrations(settings.database_url)
+    # create_all will not ALTER existing sqlite files (yesterday's fivecent.db).
+    ensure_migrations(settings.database_url)
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
     await seed_if_empty(sessions, settings)

@@ -16,6 +16,10 @@ def _ts(value: Any) -> datetime:
         return datetime.now(timezone.utc)
 
 
+def _digits(value: Any) -> str:
+    return "".join(ch for ch in str(value or "") if ch.isdigit())
+
+
 def normalize_whatsapp_payload(
     payload: dict,
     *,
@@ -32,15 +36,19 @@ def normalize_whatsapp_payload(
             tenant_id = tenant_for_phone_number_id(str(phone_number_id))
             if not tenant_id:
                 continue
+            business_number = _digits(metadata.get("display_phone_number"))
             for message in value.get("messages") or []:
                 if message.get("type") != "text":
+                    continue
+                sender = str(message.get("from", ""))
+                if business_number and _digits(sender) == business_number:
                     continue
                 text = ((message.get("text") or {}).get("body")) or None
                 events.append(
                     InboundMessageEvent(
                         tenant_id=tenant_id,
                         channel="whatsapp",
-                        user_channel_id=str(message.get("from", "")),
+                        user_channel_id=sender,
                         provider_message_id=str(message.get("id", "")),
                         text=text,
                         timestamp=_ts(message.get("timestamp")),

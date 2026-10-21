@@ -15,6 +15,8 @@ class Settings(BaseSettings):
     whatsapp_app_secret: str = ""
     whatsapp_access_token: str = ""
     whatsapp_phone_number_id: str = "seed-phone-number-id"
+    whatsapp_waba_id: str = ""
+    whatsapp_callback_url: str = ""
     whatsapp_graph_version: str = "v21.0"
     seed_tenant_id: str = "port-vauban"
     admin_api_token: str = ""

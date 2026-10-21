@@ -17,7 +17,9 @@ _YACHTING = re.compile(
     r"quote|quotes|devis|apa|vat|hold|option|booking|book|reserve|"
     r"availability|available|pax|passenger|passengers|guest|guests|"
     r"lagoon|sunseeker|princess|azimut|pershing|ferretti|riva|"
-    r"bateau|bateaux|location|journ[eé]e|passagers"
+    r"bateau|bateaux|location|journ[eé]e|passagers|"
+    r"monaco|antibes|cannes|nice|tropez|vauban|destination|port|"
+    r"callback|call back|follow[- ]?up|reposition"
     r")\b",
     re.IGNORECASE,
 )
@@ -34,11 +36,15 @@ _ACK = re.compile(
 _CONTACT = re.compile(r"[\w.+-]+@[\w.-]+\.\w+|\+\d{8,}|\d{4}-\d{2}-\d{2}")
 
 
+def is_greeting(text: str) -> bool:
+    return bool(_GREETING.match((text or "").strip()))
+
+
 def is_yachting_scope(text: str) -> bool:
     stripped = (text or "").strip()
     if not stripped:
         return True
-    if _GREETING.match(stripped) or _ACK.match(stripped) or _CONTACT.search(stripped):
+    if is_greeting(stripped) or _ACK.match(stripped) or _CONTACT.search(stripped):
         return True
     return bool(_YACHTING.search(stripped))
 
