@@ -107,6 +107,7 @@ class TenantContext:
     service_type: str = "yachting"
     llm_provider: str = "openai"
     llm_model: str = "gpt-4o-mini"
+    telegram_chat_id: Optional[str] = None
 
     @property
     def name(self) -> str:
@@ -147,3 +148,18 @@ def pick_alert_brokers(tenant: TenantContext, round_robin_index: int = 0) -> tup
     if tenant.routing_mode == "round_robin":
         return (active[round_robin_index % len(active)],)
     return active
+
+
+def telegram_dispatch_chat_ids(tenant: TenantContext, brokers: tuple[Broker, ...] | None = None) -> list[str]:
+    """Prefer tenant desk chat id; else active broker chat ids."""
+    ids: list[str] = []
+    desk = (tenant.telegram_chat_id or "").strip()
+    if desk:
+        ids.append(desk)
+        return ids
+    selected = brokers if brokers is not None else tenant.active_brokers
+    for broker in selected:
+        chat = (broker.telegram_chat_id or "").strip()
+        if chat and chat not in ids:
+            ids.append(chat)
+    return ids

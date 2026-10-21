@@ -41,6 +41,7 @@ class TenantPatch(BaseModel):
     llm_model: Optional[str] = Field(default=None, min_length=1, max_length=128)
     routing_mode: Optional[str] = None
     feature_flags: Optional[dict] = None
+    telegram_chat_id: Optional[str] = None
     is_active: Optional[bool] = None
 
 
@@ -52,7 +53,8 @@ class BrokerCreate(BaseModel):
 
 
 class BrokerPatch(BaseModel):
-    is_active: bool
+    is_active: Optional[bool] = None
+    telegram_chat_id: Optional[str] = None
 
 
 def _require_admin(settings: Settings, authorization: str) -> None:
@@ -64,7 +66,7 @@ def _require_admin(settings: Settings, authorization: str) -> None:
         raise HTTPException(status_code=401, detail="Unauthorized.")
 
 
-def _serialize_tenant(ctx) -> dict:
+def _serialize_tenant(ctx, *, telegram_bot_username: str = "fivecent_dispatch_bot") -> dict:
     return {
         "tenant_id": ctx.id,
         "agency_name": ctx.agency_name,
@@ -80,6 +82,10 @@ def _serialize_tenant(ctx) -> dict:
         "llm_model": ctx.llm_model,
         "routing_mode": ctx.routing_mode,
         "feature_flags": ctx.feature_flags.as_dict(),
+        "telegram_chat_id": ctx.telegram_chat_id,
+        "telegram_invite_link": (
+            f"https://t.me/{telegram_bot_username}?start={ctx.id}"
+        ),
         "is_active": ctx.is_active,
         "brokers": [
             {
@@ -109,6 +115,12 @@ def register_internal_routes(app, *, get_container, get_settings_fn) -> None:
             raise HTTPException(status_code=500, detail="Tenant admin is unavailable.")
         return repo
 
+    def bot_username() -> str:
+        return get_settings_fn().telegram_bot_username or "fivecent_dispatch_bot"
+
+    def serialize(ctx) -> dict:
+        return _serialize_tenant(ctx, telegram_bot_username=bot_username())
+
     def validate_plugins(service_type: str, llm_provider: str) -> None:
         container: Container = get_container()
         if service_type not in container.services.keys:
@@ -118,7 +130,7 @@ def register_internal_routes(app, *, get_container, get_settings_fn) -> None:
 
     @router.get("/tenants", dependencies=[Depends(admin)])
     async def list_tenants() -> list[dict]:
-        return [_serialize_tenant(ctx) for ctx in await tenants().list_all()]
+        return [serialize(ctx) for ctx in await tenants().list_all()]
 
     @router.post("/tenants", dependencies=[Depends(admin)])
     async def create_tenant(payload: TenantCreate) -> dict:
@@ -142,14 +154,14 @@ def register_internal_routes(app, *, get_container, get_settings_fn) -> None:
             routing_mode=payload.routing_mode,
             feature_flags=payload.feature_flags,
         )
-        return _serialize_tenant(ctx)
+        return serialize(ctx)
 
     @router.get("/tenants/{tenant_id}", dependencies=[Depends(admin)])
     async def get_tenant(tenant_id: str) -> dict:
         ctx = await tenants().get(tenant_id)
         if ctx is None:
             raise HTTPException(status_code=404, detail="Tenant not found.")
-        return _serialize_tenant(ctx)
+        return serialize(ctx)
 
     @router.patch("/tenants/{tenant_id}", dependencies=[Depends(admin)])
     async def patch_tenant(tenant_id: str, payload: TenantPatch) -> dict:
@@ -163,7 +175,7 @@ def register_internal_routes(app, *, get_container, get_settings_fn) -> None:
         ctx = await tenants().update_tenant(tenant_id, **payload.model_dump(exclude_unset=True))
         if ctx is None:
             raise HTTPException(status_code=404, detail="Tenant not found.")
-        return _serialize_tenant(ctx)
+        return serialize(ctx)
 
     @router.post("/tenants/{tenant_id}/brokers", dependencies=[Depends(admin)])
     async def add_broker(tenant_id: str, payload: BrokerCreate) -> dict:
@@ -180,15 +192,35 @@ def register_internal_routes(app, *, get_container, get_settings_fn) -> None:
             "broker_id": broker.id,
             "name": broker.name,
             "phone_number": broker.phone_number,
+            "telegram_chat_id": broker.telegram_chat_id,
             "role": broker.role,
             "is_active": broker.is_active,
         }
 
     @router.patch("/brokers/{broker_id}", dependencies=[Depends(admin)])
     async def patch_broker(broker_id: str, payload: BrokerPatch) -> dict:
-        ok = await tenants().set_broker_active(broker_id, payload.is_active)
-        if not ok:
+        data = payload.model_dump(exclude_unset=True)
+        if not data:
+            raise HTTPException(status_code=422, detail="No broker fields to update.")
+        clear_telegram = "telegram_chat_id" in data and data.get("telegram_chat_id") in {
+            None,
+            "",
+        }
+        broker = await tenants().update_broker(
+            broker_id,
+            is_active=data.get("is_active"),
+            telegram_chat_id=None if clear_telegram else data.get("telegram_chat_id"),
+            clear_telegram=clear_telegram,
+        )
+        if broker is None:
             raise HTTPException(status_code=404, detail="Broker not found.")
-        return {"broker_id": broker_id, "is_active": payload.is_active}
+        return {
+            "broker_id": broker.id,
+            "name": broker.name,
+            "phone_number": broker.phone_number,
+            "telegram_chat_id": broker.telegram_chat_id,
+            "role": broker.role,
+            "is_active": broker.is_active,
+        }
 
     app.include_router(router)

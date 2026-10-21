@@ -111,8 +111,8 @@ selected = st.selectbox(
     placeholder="No agencies yet",
 )
 
-create_tab, identity_tab, money_tab, ai_service_tab, flags_tab, brokers_tab = st.tabs(
-    ["New agency", "Identity", "Money", "AI & service", "Flags", "Brokers"]
+create_tab, identity_tab, money_tab, ai_service_tab, flags_tab, telegram_tab, brokers_tab = st.tabs(
+    ["New agency", "Identity", "Money", "AI & service", "Flags", "Telegram", "Brokers"]
 )
 
 with create_tab:
@@ -288,16 +288,80 @@ with flags_tab:
         else:
             _error(response)
 
+with telegram_tab:
+    st.subheader("Dispatch bot onboarding")
+    st.caption(
+        "One central bot for all agencies. Send the invite link to the broker — "
+        "they tap Start and Fivecent stores their chat_id. No per-agency bot tokens."
+    )
+    invite = tenant.get("telegram_invite_link") or ""
+    desk = tenant.get("telegram_chat_id") or ""
+    if invite:
+        st.code(invite, language=None)
+        st.link_button("Open invite in Telegram", invite, use_container_width=False)
+    else:
+        st.warning("Invite link unavailable — check TELEGRAM_BOT_USERNAME on the API.")
+
+    if desk:
+        st.success(f"Desk connected · telegram_chat_id = `{desk}`")
+    else:
+        st.info("Desk not linked yet. Broker must open the invite link and tap Start.")
+
+    with st.form("telegram_desk"):
+        desk_input = st.text_input(
+            "Desk telegram_chat_id (manual override)",
+            value=desk,
+            help="Usually filled by /start deep-link. Paste a chat id only if you already know it.",
+        )
+        save_desk = st.form_submit_button("Save desk chat id")
+    if save_desk:
+        response = api_request(
+            "PATCH",
+            f"/internal/tenants/{selected}",
+            json={"telegram_chat_id": desk_input.strip() or None},
+        )
+        if response is None:
+            st.stop()
+        if response.is_success:
+            st.success("Saved desk Telegram chat id")
+            st.rerun()
+        else:
+            _error(response)
+
+    st.markdown("**Mute command format**")
+    st.code(f"/mute_<guest_digits>_{selected}", language=None)
+    st.caption("Shown on each lead card. Sets a 24h human-active circuit breaker for that WhatsApp guest.")
+
 with brokers_tab:
     st.subheader("Brokers")
     rows = tenant.get("brokers") or []
     if rows:
         st.dataframe(rows, hide_index=True, use_container_width=True)
         for broker in rows:
-            col_a, col_b = st.columns([3, 1])
+            col_a, col_b, col_c = st.columns([3, 2, 1])
             col_a.write(f"{broker['name']} · {broker['phone_number']} · {broker['role']}")
+            with col_b.form(f"broker_tg_{broker['broker_id']}"):
+                tg = st.text_input(
+                    "Telegram chat id",
+                    value=broker.get("telegram_chat_id") or "",
+                    key=f"tg_input_{broker['broker_id']}",
+                    label_visibility="collapsed",
+                    placeholder="Telegram chat id",
+                )
+                if st.form_submit_button("Save TG"):
+                    response = api_request(
+                        "PATCH",
+                        f"/internal/brokers/{broker['broker_id']}",
+                        json={"telegram_chat_id": tg.strip() or None},
+                    )
+                    if response is None:
+                        st.stop()
+                    if response.is_success:
+                        st.rerun()
+                    else:
+                        _error(response)
             label = "Deactivate" if broker.get("is_active") else "Reactivate"
-            if col_b.button(label, key=f"toggle_{broker['broker_id']}"):
+            if col_c.button(label, key=f"toggle_{broker['broker_id']}"):
                 response = api_request(
                     "PATCH",
                     f"/internal/brokers/{broker['broker_id']}",
@@ -316,7 +380,10 @@ with brokers_tab:
         st.markdown("**Add broker**")
         name = st.text_input("Name")
         phone = st.text_input("Personal WhatsApp", placeholder="+33612345678")
-        telegram = st.text_input("Telegram chat id")
+        telegram = st.text_input(
+            "Telegram chat id (optional fallback)",
+            help="Used only when the agency desk chat id is empty.",
+        )
         role = st.selectbox("Role", options=["broker", "owner", "senior_broker", "assistant"])
         add = st.form_submit_button("Add broker")
     if add:

@@ -9,18 +9,32 @@ logger = logging.getLogger(__name__)
 
 
 def format_telegram_alert(tenant_id: str, kind: str, payload: dict) -> str:
-    lines = [f"Fivecent · {kind}", f"Agency: {tenant_id}"]
+    agency = str(payload.get("agency_name") or tenant_id)
+    lines = [f"Fivecent · {kind.upper()} — {agency}", "────────────────────────"]
+
     if kind == "hold":
+        lines.append("NEW 24h SOFT HOLD")
+        name = str(payload.get("customer_name") or "").strip()
+        email = str(payload.get("email") or "").strip()
+        if name or email:
+            lines.append(f"Client: {name or 'Guest'}" + (f" ({email})" if email else ""))
         lines.append(
-            "24h option: "
-            f"{payload.get('boat_id')} · {payload.get('start_date')} · "
-            f"{payload.get('days')} day(s)"
+            f"Yacht: {payload.get('boat_name') or payload.get('boat_id') or '—'}"
         )
+        lines.append(
+            f"Date: {payload.get('start_date')} · {payload.get('days')} day(s)"
+        )
+        if payload.get("quote_total"):
+            currency = payload.get("currency") or "EUR"
+            lines.append(f"Quote: {payload['quote_total']} {currency}")
         if payload.get("expires_at"):
             lines.append(f"Expires: {payload['expires_at']}")
-        if payload.get("lead_id"):
-            lines.append(f"Lead: {payload['lead_id']}")
+        lines.append("Contract unconfirmed — action required.")
     elif kind == "followup":
+        lines.append("BROKER FOLLOW-UP REQUEST")
+        name = str(payload.get("customer_name") or "").strip()
+        if name:
+            lines.append(f"Guest: {name}")
         lines.append(f"Destination: {payload.get('destination') or '—'}")
         pref = payload.get("contact_preference")
         if pref:
@@ -28,9 +42,6 @@ def format_telegram_alert(tenant_id: str, kind: str, payload: dict) -> str:
         notes = str(payload.get("notes") or "").strip()
         if notes:
             lines.append(f"Notes: {notes}")
-        name = str(payload.get("customer_name") or "").strip()
-        if name:
-            lines.append(f"Guest: {name}")
     elif kind == "handoff" and payload.get("reason") == "session_window_closed":
         lines.append("WhatsApp 24h session window closed (Meta 131047).")
         lines.append("Free-form reply blocked — send an approved template message.")
@@ -42,20 +53,31 @@ def format_telegram_alert(tenant_id: str, kind: str, payload: dict) -> str:
         lines.append(f"Reason: {reason}")
 
     if payload.get("quote_id"):
-        lines.append(f"Quote: {payload['quote_id']}")
+        lines.append(f"Quote id: {payload['quote_id']}")
+
     wa_me = payload.get("wa_me")
+    mute = payload.get("mute_command")
+    lines.append("")
     if wa_me:
-        lines.append(f"WhatsApp: {wa_me}")
+        lines.append(f"Open WhatsApp: {wa_me}")
     elif payload.get("guest_user_id"):
         lines.append(f"Guest id: {payload['guest_user_id']}")
+    if mute:
+        lines.append(f"Mute bot 24h: {mute}")
     return "\n".join(lines)
 
 
 def telegram_chat_ids(payload: dict) -> list[str]:
+    ids: list[str] = []
+    desk = payload.get("tenant_telegram_chat_id")
+    if desk is not None:
+        text = str(desk).strip()
+        if text:
+            ids.append(text)
+            return ids
     brokers = payload.get("alert_brokers") or []
     if not isinstance(brokers, list):
         return []
-    ids: list[str] = []
     for broker in brokers:
         if not isinstance(broker, dict):
             continue
@@ -63,7 +85,7 @@ def telegram_chat_ids(payload: dict) -> list[str]:
         if chat_id is None:
             continue
         text = str(chat_id).strip()
-        if text:
+        if text and text not in ids:
             ids.append(text)
     return ids
 

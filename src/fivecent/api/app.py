@@ -20,6 +20,7 @@ from fivecent.application.registry import PluginRegistry
 from fivecent.application.turn import handle_turn
 from fivecent.composition import build_container
 from fivecent.config import Settings, get_settings
+from fivecent.messaging.plugin_telegram import register_telegram_routes
 
 logger = logging.getLogger(__name__)
 
@@ -103,6 +104,11 @@ def create_app(
                 "app_secret": bool(current.whatsapp_app_secret),
                 "access_token": bool(current.whatsapp_access_token),
                 "phone_number_id": bool(phone and phone != "seed-phone-number-id"),
+            },
+            "telegram": {
+                "bot_token": bool(current.telegram_bot_token),
+                "bot_username": current.telegram_bot_username or "fivecent_dispatch_bot",
+                "webhook_secret": bool(current.telegram_webhook_secret),
             },
         }
 
@@ -227,6 +233,11 @@ def create_app(
         return verify_channel_webhook(channel, mode, verify_token, challenge)
 
     register_internal_routes(
+        app,
+        get_container=lambda: app.state.container,
+        get_settings_fn=lambda: app.state.settings,
+    )
+    register_telegram_routes(
         app,
         get_container=lambda: app.state.container,
         get_settings_fn=lambda: app.state.settings,

@@ -304,12 +304,14 @@ async def _notify_session_window_closed(
         "ok": False,
         "reason": "session_window_closed",
         "code": SessionWindowClosedError.code,
+        "agency_name": tenant.agency_name,
         "channel": channel,
         "guest_channel": channel,
         "guest_user_id": user_channel_id,
         "conversation_id": conversation_id,
         "draft_reply": draft_reply,
         "detail": detail,
+        "tenant_telegram_chat_id": tenant.telegram_chat_id,
         "alert_brokers": [
             {
                 "name": broker.name,
@@ -321,6 +323,7 @@ async def _notify_session_window_closed(
     }
     if channel == "whatsapp" and digits:
         payload["wa_me"] = f"https://wa.me/{digits}"
+        payload["mute_command"] = f"/mute_{digits}_{tenant.id}"
     logger.error(
         "session window closed tenant=%s user=%s conversation=%s",
         tenant.id,

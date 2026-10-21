@@ -1,7 +1,13 @@
 from datetime import datetime, timezone
 from decimal import Decimal
 
-from fivecent.domain.tenancy import FeatureFlags, TenantContext, is_after_hours
+from fivecent.domain.tenancy import (
+    Broker,
+    FeatureFlags,
+    TenantContext,
+    is_after_hours,
+    telegram_dispatch_chat_ids,
+)
 from fivecent.services.plugin_yachting.domain.quoting import QuoteBreakdown, calculate_itemized_quote
 from tests.services.yachting.test_quoting import LAGOON
 
@@ -54,3 +60,42 @@ def test_after_hours_only_flag() -> None:
     assert tenant.bot_should_run(afternoon) is False
     evening = datetime(2026, 6, 6, 20, 0, tzinfo=timezone.utc)
     assert tenant.bot_should_run(evening) is True
+
+
+def test_telegram_dispatch_prefers_desk_over_brokers() -> None:
+    brokers = (
+        Broker(id="1", name="A", phone_number="+1", telegram_chat_id="111"),
+        Broker(id="2", name="B", phone_number="+2", telegram_chat_id="222"),
+    )
+    desk = TenantContext(
+        id="cannes",
+        agency_name="Cannes",
+        home_port="Cannes",
+        currency="EUR",
+        whatsapp_phone_number_id="p",
+        whatsapp_waba_id="",
+        vat_rate=Decimal("0.2"),
+        apa_rate=Decimal("0.3"),
+        max_discount_pct=Decimal("0.08"),
+        routing_mode="broadcast",
+        feature_flags=FeatureFlags.from_mapping({}),
+        brokers=brokers,
+        telegram_chat_id="desk-9",
+    )
+    assert telegram_dispatch_chat_ids(desk) == ["desk-9"]
+    no_desk = TenantContext(
+        id="cannes",
+        agency_name="Cannes",
+        home_port="Cannes",
+        currency="EUR",
+        whatsapp_phone_number_id="p",
+        whatsapp_waba_id="",
+        vat_rate=Decimal("0.2"),
+        apa_rate=Decimal("0.3"),
+        max_discount_pct=Decimal("0.08"),
+        routing_mode="broadcast",
+        feature_flags=FeatureFlags.from_mapping({}),
+        brokers=brokers,
+        telegram_chat_id=None,
+    )
+    assert telegram_dispatch_chat_ids(no_desk) == ["111", "222"]

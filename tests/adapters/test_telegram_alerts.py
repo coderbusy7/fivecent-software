@@ -21,11 +21,25 @@ def test_format_hold_includes_wa_me() -> None:
             "days": 2,
             "expires_at": "2026-06-07T12:00:00+00:00",
             "wa_me": "https://wa.me/33612345678",
+            "mute_command": "/mute_33612345678_port-vauban",
         },
     )
-    assert "24h option" in text
+    assert "SOFT HOLD" in text
     assert "lagoon-450" in text
     assert "https://wa.me/33612345678" in text
+    assert "/mute_33612345678_port-vauban" in text
+
+
+def test_telegram_chat_ids_prefers_tenant_desk() -> None:
+    assert telegram_chat_ids(
+        {
+            "tenant_telegram_chat_id": "desk-1",
+            "alert_brokers": [
+                {"name": "A", "telegram_chat_id": "111"},
+                {"name": "B", "telegram_chat_id": "222"},
+            ],
+        }
+    ) == ["desk-1"]
 
 
 def test_format_followup_includes_destination() -> None:

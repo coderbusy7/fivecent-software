@@ -29,6 +29,7 @@ class Tenant(Base):
     llm_model: Mapped[str] = mapped_column(String(128), default="gpt-4o-mini")
     routing_mode: Mapped[str] = mapped_column(String(32), default="broadcast")
     feature_flags: Mapped[dict] = mapped_column(JSON, default=dict)
+    telegram_chat_id: Mapped[Optional[str]] = mapped_column(String(64), default=None)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
 

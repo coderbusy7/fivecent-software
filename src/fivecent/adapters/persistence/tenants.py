@@ -36,6 +36,7 @@ def _context(row: Tenant, brokers: list[BrokerRow]) -> TenantContext:
         service_type=row.service_type or "yachting",
         llm_provider=row.llm_provider or "openai",
         llm_model=row.llm_model or "gpt-4o-mini",
+        telegram_chat_id=row.telegram_chat_id,
         brokers=tuple(
             Broker(
                 id=b.id,
@@ -169,15 +170,25 @@ class SqlTenantRepo:
                 "llm_model": "llm_model",
                 "routing_mode": "routing_mode",
                 "feature_flags": "feature_flags",
+                "telegram_chat_id": "telegram_chat_id",
                 "is_active": "is_active",
             }
             for key, column in mapping.items():
-                if key in fields and fields[key] is not None:
-                    value = fields[key]
-                    if key == "feature_flags":
-                        current = row.feature_flags if isinstance(row.feature_flags, dict) else {}
-                        value = {**DEFAULT_FEATURE_FLAGS, **current, **value}
-                    setattr(row, column, value)
+                if key not in fields:
+                    continue
+                value = fields[key]
+                if key == "telegram_chat_id":
+                    # Allow clearing desk chat id with null or blank.
+                    row.telegram_chat_id = (
+                        None if value is None else (str(value).strip() or None)
+                    )
+                    continue
+                if value is None:
+                    continue
+                if key == "feature_flags":
+                    current = row.feature_flags if isinstance(row.feature_flags, dict) else {}
+                    value = {**DEFAULT_FEATURE_FLAGS, **current, **value}
+                setattr(row, column, value)
             await session.commit()
         self.invalidate_routing()
         return await self.get(tenant_id)
@@ -223,3 +234,38 @@ class SqlTenantRepo:
             row.is_active = is_active
             await session.commit()
             return True
+
+    async def update_broker(
+        self,
+        broker_id: str,
+        *,
+        is_active: Optional[bool] = None,
+        telegram_chat_id: Optional[str] = None,
+        clear_telegram: bool = False,
+    ) -> Optional[Broker]:
+        async with self._sessions() as session:
+            row = await session.get(BrokerRow, broker_id)
+            if row is None:
+                return None
+            if is_active is not None:
+                row.is_active = is_active
+            if clear_telegram:
+                row.telegram_chat_id = None
+            elif telegram_chat_id is not None:
+                row.telegram_chat_id = telegram_chat_id.strip() or None
+            await session.commit()
+            return Broker(
+                id=row.id,
+                name=row.name,
+                phone_number=row.phone_number,
+                telegram_chat_id=row.telegram_chat_id,
+                role=row.role,
+                is_active=row.is_active,
+            )
+
+    async def set_tenant_telegram_chat_id(
+        self, tenant_id: str, telegram_chat_id: str
+    ) -> Optional[TenantContext]:
+        return await self.update_tenant(
+            tenant_id, telegram_chat_id=str(telegram_chat_id).strip()
+        )

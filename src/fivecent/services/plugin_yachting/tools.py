@@ -16,7 +16,7 @@ from fivecent.services.plugin_yachting.domain.quoting import (
     calculate_itemized_quote,
     quote_to_dict,
 )
-from fivecent.domain.tenancy import TenantContext, pick_alert_brokers
+from fivecent.domain.tenancy import TenantContext, pick_alert_brokers, telegram_dispatch_chat_ids
 from fivecent.services.plugin_yachting.ports import (
     BrokerAlertPort,
     FleetRepo,
@@ -298,13 +298,14 @@ class YachtingTools:
         payload = {
             "ok": True,
             "reason": "followup",
+            "agency_name": tenant.agency_name,
             "destination": destination,
             "contact_preference": preference,
             "notes": str(arguments.get("notes") or "").strip(),
             "customer_name": str(arguments.get("customer_name") or "").strip(),
             "conversation_id": context.conversation_id,
             **_guest_alert_fields(context),
-            "alert_brokers": await self._selected_alert_brokers(tenant),
+            **await self._alert_routing_fields(tenant, context),
         }
         await self._alerts.notify_followup(tenant.id, payload)
         return json.dumps(payload)
@@ -363,17 +364,30 @@ class YachtingTools:
         )
         if not reserved:
             return _error("hold_conflict", "That boat already has an active option on those dates.")
+        quote_total = None
+        currency = tenant.currency
+        if quote_id:
+            quote = await self._quotes.get(tenant.id, quote_id)
+            if quote is not None:
+                quote_total = str(quote.total)
+                currency = quote.currency
         payload = {
             "ok": True,
             "lead_id": lead_id,
+            "agency_name": tenant.agency_name,
+            "customer_name": approval.customer_name,
+            "email": approval.email,
             "boat_id": approval.boat_id,
+            "boat_name": boat.name,
             "start_date": approval.start_date.isoformat(),
             "days": approval.days,
             "expires_at": approval.expires_at.isoformat(),
             "state": "option_held",
             "quote_id": quote_id,
+            "quote_total": quote_total,
+            "currency": currency,
             **_guest_alert_fields(context),
-            "alert_brokers": await self._selected_alert_brokers(tenant),
+            **await self._alert_routing_fields(tenant, context),
         }
         await self._alerts.notify_hold(tenant.id, payload)
         return json.dumps(payload)
@@ -394,16 +408,35 @@ class YachtingTools:
             for broker in selected
         ]
 
+    async def _alert_routing_fields(
+        self, tenant: TenantContext, context: ToolContext
+    ) -> dict[str, Any]:
+        brokers = await self._selected_alert_brokers(tenant)
+        guest = _guest_digits(context)
+        fields: dict[str, Any] = {
+            "alert_brokers": brokers,
+            "tenant_telegram_chat_id": tenant.telegram_chat_id,
+            "dispatch_chat_ids": telegram_dispatch_chat_ids(tenant),
+        }
+        if guest:
+            fields["mute_command"] = f"/mute_{guest}_{tenant.id}"
+        return fields
+
+
+def _guest_digits(context: ToolContext) -> str:
+    if context.channel != "whatsapp" or not context.user_channel_id:
+        return ""
+    return "".join(ch for ch in context.user_channel_id if ch.isdigit())
+
 
 def _guest_alert_fields(context: ToolContext) -> dict[str, str]:
     fields: dict[str, str] = {
         "guest_channel": context.channel,
         "guest_user_id": context.user_channel_id,
     }
-    if context.channel == "whatsapp" and context.user_channel_id:
-        digits = "".join(ch for ch in context.user_channel_id if ch.isdigit())
-        if digits:
-            fields["wa_me"] = f"https://wa.me/{digits}"
+    digits = _guest_digits(context)
+    if digits:
+        fields["wa_me"] = f"https://wa.me/{digits}"
     return fields
 
 

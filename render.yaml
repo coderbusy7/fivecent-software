@@ -1,0 +1,16 @@
+# Admin UI service. Point ADMIN_API_BASE at the existing FastAPI web service URL.
+# Set ADMIN_API_TOKEN to the same value as the API service.
+services:
+  - type: web
+    name: fivecent-admin
+    runtime: python
+    plan: free
+    buildCommand: pip install -e ".[admin]"
+    startCommand: ./admin.sh
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.11.9"
+      - key: ADMIN_API_TOKEN
+        sync: false
+      - key: ADMIN_API_BASE
+        sync: false
