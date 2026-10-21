@@ -186,7 +186,7 @@ async def handle_turn(event: InboundMessageEvent, container: Container) -> TurnR
             if await container.cache.is_human_active(
                 event.tenant_id, event.channel, event.user_channel_id
             ):
-                logger.info(
+                logger.warning(
                     "HITL mute tenant=%s user=%s", event.tenant_id, event.user_channel_id
                 )
                 return TurnResult(skipped=True, reason="hitl", conversation_id=conversation_id)
@@ -211,7 +211,7 @@ async def handle_turn(event: InboundMessageEvent, container: Container) -> TurnR
                 )
             history = _strip_buffered_user_turns(_window_key_turns(window), fragments)
             if _should_skip_repeat_greeting(history, user_text):
-                logger.info(
+                logger.warning(
                     "skip repeat greeting tenant=%s user=%s",
                     event.tenant_id,
                     event.user_channel_id,
@@ -269,7 +269,7 @@ async def handle_turn(event: InboundMessageEvent, container: Container) -> TurnR
                 event.user_channel_id,
                 _window_key_turns(updated),
             )
-            logger.info(
+            logger.warning(
                 "dispatched tenant=%s channel=%s msg=%s fragments=%s outbound=%s latency_ms=%s tokens_in=%s tokens_out=%s",
                 event.tenant_id,
                 event.channel,
