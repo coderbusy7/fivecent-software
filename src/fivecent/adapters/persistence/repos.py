@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 from uuid import uuid4
 
@@ -17,6 +17,15 @@ __all__ = ["SqlTenantRepo", "SqlConversationRepo"]
 # Incomplete inbound can be retried; terminal states are true duplicates.
 _RETRYABLE_STATUSES = frozenset({"received", "processing", "failed"})
 _TERMINAL_STATUSES = frozenset({"completed", "skipped"})
+DEFAULT_HITL_MUTE_SECONDS = 24 * 60 * 60
+
+
+def _as_utc(value: Optional[datetime]) -> Optional[datetime]:
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
 
 
 class SqlConversationRepo:
@@ -281,6 +290,7 @@ class SqlConversationRepo:
                         Message.processing_status == "failed",
                     )
                 )
+                muted_until = _as_utc(conv.bot_muted_until)
                 items.append(
                     {
                         "conversation_id": conv.id,
@@ -289,6 +299,7 @@ class SqlConversationRepo:
                         "user_channel_id": conv.user_channel_id,
                         "assigned_broker_id": conv.assigned_broker_id,
                         "handoff_status": conv.handoff_status or "open",
+                        "bot_muted_until": muted_until.isoformat() if muted_until else None,
                         "updated_at": conv.updated_at.isoformat() if conv.updated_at else None,
                         "last_message_at": last.created_at.isoformat()
                         if last and last.created_at
@@ -313,6 +324,7 @@ class SqlConversationRepo:
                     .limit(200)
                 )
             ).scalars().all()
+            muted_until = _as_utc(conv.bot_muted_until)
             return {
                 "conversation_id": conv.id,
                 "tenant_id": conv.tenant_id,
@@ -320,6 +332,7 @@ class SqlConversationRepo:
                 "user_channel_id": conv.user_channel_id,
                 "assigned_broker_id": conv.assigned_broker_id,
                 "handoff_status": conv.handoff_status or "open",
+                "bot_muted_until": muted_until.isoformat() if muted_until else None,
                 "updated_at": conv.updated_at.isoformat() if conv.updated_at else None,
                 "messages": [
                     {
@@ -338,6 +351,67 @@ class SqlConversationRepo:
                 ],
             }
 
+    async def is_bot_muted(
+        self, conversation_id: str, *, now: Optional[datetime] = None
+    ) -> bool:
+        """True when durable HITL mute is still in effect."""
+        clock = _as_utc(now) or datetime.now(timezone.utc)
+        async with self._sessions() as session:
+            conv = await session.get(Conversation, conversation_id)
+            if conv is None:
+                return False
+            muted_until = _as_utc(conv.bot_muted_until)
+            return muted_until is not None and muted_until > clock
+
+    async def set_hitl_mute(
+        self,
+        tenant_id: str,
+        channel: str,
+        user_channel_id: str,
+        *,
+        muted: bool,
+        mute_seconds: int = DEFAULT_HITL_MUTE_SECONDS,
+        handoff_status: Optional[str] = None,
+    ) -> Optional[str]:
+        """Persist mute/unmute for a channel peer. Returns conversation_id if found/created."""
+        now = datetime.now(timezone.utc)
+        async with self._sessions() as session:
+            result = await session.execute(
+                select(Conversation).where(
+                    Conversation.tenant_id == tenant_id,
+                    Conversation.channel == channel,
+                    Conversation.user_channel_id == user_channel_id,
+                )
+            )
+            conv = result.scalar_one_or_none()
+            if conv is None:
+                if not muted:
+                    return None
+                conv = Conversation(
+                    id=str(uuid4()),
+                    tenant_id=tenant_id,
+                    channel=channel,
+                    user_channel_id=user_channel_id,
+                    handoff_status=handoff_status or "taken_over",
+                    bot_muted_until=now + timedelta(seconds=max(1, mute_seconds)),
+                    updated_at=now,
+                )
+                session.add(conv)
+            else:
+                if muted:
+                    conv.bot_muted_until = now + timedelta(seconds=max(1, mute_seconds))
+                    if handoff_status is not None:
+                        conv.handoff_status = handoff_status
+                    elif conv.handoff_status == "open":
+                        conv.handoff_status = "taken_over"
+                else:
+                    conv.bot_muted_until = None
+                    if handoff_status is not None:
+                        conv.handoff_status = handoff_status
+                conv.updated_at = now
+            await session.commit()
+            return conv.id
+
     async def update_conversation_ops(
         self,
         tenant_id: str,
@@ -346,6 +420,8 @@ class SqlConversationRepo:
         assigned_broker_id: Optional[str] = None,
         handoff_status: Optional[str] = None,
         clear_assignment: bool = False,
+        bot_muted_until: Optional[datetime] = None,
+        clear_mute: bool = False,
     ) -> Optional[dict]:
         async with self._sessions() as session:
             conv = await session.get(Conversation, conversation_id)
@@ -357,6 +433,10 @@ class SqlConversationRepo:
                 conv.assigned_broker_id = assigned_broker_id
             if handoff_status is not None:
                 conv.handoff_status = handoff_status
+            if clear_mute:
+                conv.bot_muted_until = None
+            elif bot_muted_until is not None:
+                conv.bot_muted_until = bot_muted_until
             conv.updated_at = datetime.now(timezone.utc)
             await session.commit()
         return await self.get_conversation(tenant_id, conversation_id)

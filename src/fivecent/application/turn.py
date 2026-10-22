@@ -141,6 +141,13 @@ async def handle_turn(event: InboundMessageEvent, container: Container) -> TurnR
         await container.cache.set_human_active(
             event.tenant_id, event.channel, event.user_channel_id
         )
+        await container.conversations.set_hitl_mute(
+            event.tenant_id,
+            event.channel,
+            event.user_channel_id,
+            muted=True,
+            handoff_status="taken_over",
+        )
         logger.info(
             "HITL engaged tenant=%s user=%s msg=%s",
             event.tenant_id,
@@ -209,11 +216,17 @@ async def handle_turn(event: InboundMessageEvent, container: Container) -> TurnR
                 if not user_text:
                     return await _skip(container, event, conversation_id, "empty_buffer")
 
-            if await container.cache.is_human_active(
+            durable_mute = await container.conversations.is_bot_muted(conversation_id)
+            cache_mute = await container.cache.is_human_active(
                 event.tenant_id, event.channel, event.user_channel_id
-            ):
+            )
+            if durable_mute or cache_mute:
                 logger.warning(
-                    "HITL mute tenant=%s user=%s", event.tenant_id, event.user_channel_id
+                    "HITL mute tenant=%s user=%s durable=%s cache=%s",
+                    event.tenant_id,
+                    event.user_channel_id,
+                    durable_mute,
+                    cache_mute,
                 )
                 return await _skip(container, event, conversation_id, "hitl")
 

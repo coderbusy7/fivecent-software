@@ -156,6 +156,13 @@ def register_telegram_routes(
                 return {"ok": True}
             # WhatsApp Cloud API uses digit-only `from` ids; mute commands match that.
             await container.cache.set_human_active(tenant_id, "whatsapp", phone)
+            await container.conversations.set_hitl_mute(
+                tenant_id,
+                "whatsapp",
+                phone,
+                muted=True,
+                handoff_status="taken_over",
+            )
             await send_telegram_text(
                 bot_token=settings.telegram_bot_token,
                 chat_id=str(chat_id),

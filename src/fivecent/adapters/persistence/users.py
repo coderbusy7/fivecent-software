@@ -70,8 +70,11 @@ class SqlUserRepo:
         email: str,
         display_name: str,
         tenant_id: str,
+        role: str = "client_user",
     ) -> dict:
-        """Provision a read-only client portal user with a one-time invite token."""
+        """Provision a portal user with a one-time invite token (client_user or agency_ops)."""
+        if role not in ("client_user", "agency_ops"):
+            raise ValueError("Portal invite role must be client_user or agency_ops.")
         invite = mint_api_token()
         user_id = str(uuid4())
         expires = datetime.now(timezone.utc) + timedelta(hours=INVITE_TTL_HOURS)
@@ -80,7 +83,8 @@ class SqlUserRepo:
                 select(AdminUser).where(AdminUser.email == email.strip().lower())
             )
             if existing is not None:
-                if existing.is_active and existing.role == "client_user":
+                if existing.is_active and existing.role in ("client_user", "agency_ops"):
+                    existing.role = role
                     existing.invite_token_hash = hash_api_token(invite)
                     existing.invite_expires_at = expires
                     existing.password_hash = None
@@ -101,7 +105,7 @@ class SqlUserRepo:
                 id=user_id,
                 email=email.strip().lower(),
                 display_name=display_name.strip(),
-                role="client_user",
+                role=role,
                 tenant_id=tenant_id,
                 password_hash=None,
                 api_token_hash=None,
@@ -115,7 +119,7 @@ class SqlUserRepo:
             await session.commit()
         return {
             **_serialize_from_fields(
-                user_id, email, display_name, "client_user", tenant_id, True
+                user_id, email, display_name, role, tenant_id, True
             ),
             "invite_token": invite,
             "invite_expires_at": expires.isoformat(),
@@ -156,8 +160,11 @@ class SqlUserRepo:
         display_name: str,
         tenant_id: str,
         password: str,
+        role: str = "client_user",
     ) -> dict:
-        """Create or reset a client portal user with a password already set (testing / ops)."""
+        """Create or reset a portal user with a password already set (testing / ops)."""
+        if role not in ("client_user", "agency_ops"):
+            raise ValueError("Portal role must be client_user or agency_ops.")
         api_token = mint_api_token()
         async with self._sessions() as session:
             row = await session.scalar(
@@ -168,7 +175,7 @@ class SqlUserRepo:
                     id=str(uuid4()),
                     email=email.strip().lower(),
                     display_name=display_name.strip(),
-                    role="client_user",
+                    role=role,
                     tenant_id=tenant_id,
                     password_hash=hash_password(password),
                     api_token_hash=hash_api_token(api_token),
@@ -180,10 +187,10 @@ class SqlUserRepo:
                 )
                 session.add(row)
             else:
-                if row.role != "client_user":
-                    raise ValueError("Email is already registered as a non-client account.")
+                if row.role not in ("client_user", "agency_ops"):
+                    raise ValueError("Email is already registered as a non-portal account.")
                 row.display_name = display_name.strip()
-                row.role = "client_user"
+                row.role = role
                 row.tenant_id = tenant_id
                 row.password_hash = hash_password(password)
                 row.api_token_hash = hash_api_token(api_token)
@@ -204,7 +211,7 @@ class SqlUserRepo:
                 raise ValueError("Invalid email or password.")
             if not row.password_hash or not verify_password(password, row.password_hash):
                 raise ValueError("Invalid email or password.")
-            if row.role != "client_user":
+            if row.role not in ("client_user", "agency_ops"):
                 raise ValueError("This account must use the company admin sign-in.")
             api_token = mint_api_token()
             row.api_token_hash = hash_api_token(api_token)

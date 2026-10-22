@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Literal, Optional, Protocol, Sequence
 
 from fivecent.application.registry import PluginRegistry
@@ -146,6 +147,21 @@ class ConversationRepo(Protocol):
     async def get_raw_inbound(self, payload_id: str) -> Optional[dict]: ...
 
     async def list_failed_raw_inbound(self, *, limit: int = 50) -> list[dict]: ...
+
+    async def is_bot_muted(
+        self, conversation_id: str, *, now: Optional[datetime] = None
+    ) -> bool: ...
+
+    async def set_hitl_mute(
+        self,
+        tenant_id: str,
+        channel: str,
+        user_channel_id: str,
+        *,
+        muted: bool,
+        mute_seconds: int = 86400,
+        handoff_status: Optional[str] = None,
+    ) -> Optional[str]: ...
 
 
 class LLMPort(Protocol):

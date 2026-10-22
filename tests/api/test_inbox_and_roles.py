@@ -59,9 +59,11 @@ async def test_inbox_list_takeover_resume_and_tenant_isolation(
     )
     assert takeover.status_code == 200
     assert takeover.json()["handoff_status"] == "taken_over"
+    assert takeover.json().get("bot_muted_until")
     assert await container.cache.is_human_active(
         "port-vauban", "whatsapp", "+33699990001"
     )
+    assert await container.conversations.is_bot_muted(conversation_id)
 
     resume = client.post(
         f"/internal/tenants/port-vauban/conversations/{conversation_id}/resume-bot",
@@ -69,9 +71,11 @@ async def test_inbox_list_takeover_resume_and_tenant_isolation(
     )
     assert resume.status_code == 200
     assert resume.json()["handoff_status"] == "open"
+    assert resume.json().get("bot_muted_until") is None
     assert not await container.cache.is_human_active(
         "port-vauban", "whatsapp", "+33699990001"
     )
+    assert not await container.conversations.is_bot_muted(conversation_id)
 
     denied = client.get(
         "/internal/tenants/other-agency/conversations",

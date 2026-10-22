@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
-from typing import Optional
+from typing import Literal, Optional
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from pydantic import BaseModel, Field, field_validator
@@ -147,6 +148,7 @@ class ClientInvite(BaseModel):
     email: str = Field(min_length=3, max_length=255)
     display_name: str = Field(min_length=1, max_length=255)
     tenant_id: str = Field(min_length=1, max_length=64)
+    role: Literal["client_user", "agency_ops"] = "client_user"
 
 
 class PortalSetPassword(BaseModel):
@@ -164,6 +166,13 @@ class PortalProvision(BaseModel):
     display_name: str = Field(min_length=1, max_length=255)
     tenant_id: str = Field(min_length=1, max_length=64)
     password: str = Field(min_length=12, max_length=128)
+    role: Literal["client_user", "agency_ops"] = "client_user"
+
+
+class PortalFleetPatch(BaseModel):
+    """Maintenance / availability: active=false takes the boat out of bookable fleet."""
+
+    active: bool
 
 
 class ConversationOpsPatch(BaseModel):
@@ -202,7 +211,7 @@ async def _resolve_actor(
 
 
 def _require_role(actor: Actor, minimum: Role) -> None:
-    if actor.is_client():
+    if actor.is_portal_user():
         raise HTTPException(
             status_code=403, detail="Client portal users cannot access company admin."
         )
@@ -215,9 +224,18 @@ def _require_tenant(actor: Actor, tenant_id: str) -> None:
         raise HTTPException(status_code=403, detail="Tenant access denied.")
 
 
-def _require_client(actor: Actor) -> None:
-    if not actor.is_client() or not actor.tenant_id:
+def _require_portal(actor: Actor) -> None:
+    if not actor.is_portal_user() or not actor.tenant_id:
         raise HTTPException(status_code=403, detail="Client portal access required.")
+
+
+def _require_portal_ops(actor: Actor) -> None:
+    _require_portal(actor)
+    if not actor.may_mutate_fleet():
+        raise HTTPException(
+            status_code=403,
+            detail="Agency operations role required for fleet maintenance.",
+        )
 
 
 def _serialize_tenant(
@@ -747,6 +765,14 @@ def register_internal_routes(app, *, get_container, get_settings_fn) -> None:
             await repo.mark_raw_inbound(payload_id, status="failed", error=str(exc)[:2000])
             raise HTTPException(status_code=500, detail="Replay failed.") from exc
         await repo.mark_raw_inbound(payload_id, status="replayed", error=None)
+        await audit_write(
+            current,
+            tenant_id=row.get("tenant_id"),
+            action="replay",
+            resource_type="inbound_payload",
+            resource_id=payload_id,
+            after={"status": "replayed", "channel": row.get("channel")},
+        )
         return {"status": "ok", "payload_id": payload_id}
 
     @router.get("/alerts/pending")
@@ -805,7 +831,9 @@ def register_internal_routes(app, *, get_container, get_settings_fn) -> None:
         human = await get_container().cache.is_human_active(
             tenant_id, detail["channel"], detail["user_channel_id"]
         )
-        detail["human_active"] = human
+        durable = await conversations().is_bot_muted(conversation_id)
+        detail["human_active"] = human or durable
+        detail["bot_muted"] = durable
         return detail
 
     @router.patch("/tenants/{tenant_id}/conversations/{conversation_id}")
@@ -848,8 +876,12 @@ def register_internal_routes(app, *, get_container, get_settings_fn) -> None:
         await get_container().cache.set_human_active(
             tenant_id, detail["channel"], detail["user_channel_id"]
         )
+        muted_until = datetime.now(timezone.utc) + timedelta(hours=24)
         updated = await conversations().update_conversation_ops(
-            tenant_id, conversation_id, handoff_status="taken_over"
+            tenant_id,
+            conversation_id,
+            handoff_status="taken_over",
+            bot_muted_until=muted_until,
         )
         await audit_write(
             current,
@@ -857,6 +889,7 @@ def register_internal_routes(app, *, get_container, get_settings_fn) -> None:
             action="takeover",
             resource_type="conversation",
             resource_id=conversation_id,
+            after={"bot_muted_until": muted_until.isoformat(), "handoff_status": "taken_over"},
         )
         return updated or detail
 
@@ -873,7 +906,10 @@ def register_internal_routes(app, *, get_container, get_settings_fn) -> None:
             tenant_id, detail["channel"], detail["user_channel_id"]
         )
         updated = await conversations().update_conversation_ops(
-            tenant_id, conversation_id, handoff_status="open"
+            tenant_id,
+            conversation_id,
+            handoff_status="open",
+            clear_mute=True,
         )
         await audit_write(
             current,
@@ -881,6 +917,7 @@ def register_internal_routes(app, *, get_container, get_settings_fn) -> None:
             action="resume_bot",
             resource_type="conversation",
             resource_id=conversation_id,
+            after={"bot_muted_until": None, "handoff_status": "open"},
         )
         return updated or detail
 
@@ -923,8 +960,12 @@ def register_internal_routes(app, *, get_container, get_settings_fn) -> None:
         await container.cache.set_human_active(
             tenant_id, detail["channel"], detail["user_channel_id"]
         )
+        muted_until = datetime.now(timezone.utc) + timedelta(hours=24)
         await conversations().update_conversation_ops(
-            tenant_id, conversation_id, handoff_status="taken_over"
+            tenant_id,
+            conversation_id,
+            handoff_status="taken_over",
+            bot_muted_until=muted_until,
         )
         await conversations().append_assistant(
             conversation_id=conversation_id,
@@ -960,6 +1001,11 @@ def register_internal_routes(app, *, get_container, get_settings_fn) -> None:
         payload: UserCreate, current: Actor = Depends(actor)
     ) -> dict:
         _require_role(current, "platform_admin")
+        if payload.role in ("client_user", "agency_ops"):
+            raise HTTPException(
+                status_code=422,
+                detail="Use /internal/portal/invite or /portal/provision for portal roles.",
+            )
         if payload.role != "platform_admin" and not payload.tenant_id:
             raise HTTPException(
                 status_code=422, detail="tenant_id is required for non-platform roles."
@@ -1117,10 +1163,17 @@ def register_internal_routes(app, *, get_container, get_settings_fn) -> None:
             "email": current.email,
             "role": current.role,
             "tenant_id": current.tenant_id,
-            "workspace": "client_portal" if current.is_client() else "company_admin",
+            "workspace": (
+                "client_portal" if current.is_portal_user() else "company_admin"
+            ),
+            "capabilities": {
+                "view_guest_contact": current.may_view_guest_contact(),
+                "mutate_fleet": current.may_mutate_fleet(),
+                "portal_read": current.is_portal_user(),
+            },
         }
 
-    # --- ED-15 client portal (read-only analytics) ---------------------------
+    # --- ED-15 / ED-17 client executive portal --------------------------------
 
     @router.post("/portal/invite")
     async def invite_client_user(
@@ -1135,6 +1188,7 @@ def register_internal_routes(app, *, get_container, get_settings_fn) -> None:
                 email=payload.email,
                 display_name=payload.display_name,
                 tenant_id=payload.tenant_id,
+                role=payload.role,
             )
         except ValueError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
@@ -1142,9 +1196,9 @@ def register_internal_routes(app, *, get_container, get_settings_fn) -> None:
             current,
             tenant_id=payload.tenant_id,
             action="invite",
-            resource_type="client_user",
+            resource_type="portal_user",
             resource_id=invited["user_id"],
-            after={"email": invited["email"], "role": "client_user"},
+            after={"email": invited["email"], "role": payload.role},
         )
         return invited
 
@@ -1191,7 +1245,7 @@ def register_internal_routes(app, *, get_container, get_settings_fn) -> None:
     async def portal_provision(
         payload: PortalProvision, current: Actor = Depends(actor)
     ) -> dict:
-        """Company staff: create a client with password already set (no invite token)."""
+        """Company staff: create a portal user with password already set (no invite token)."""
         _require_role(current, "agency_admin")
         _require_tenant(current, payload.tenant_id)
         if await tenants().get(payload.tenant_id) is None:
@@ -1202,6 +1256,7 @@ def register_internal_routes(app, *, get_container, get_settings_fn) -> None:
                 display_name=payload.display_name,
                 tenant_id=payload.tenant_id,
                 password=payload.password,
+                role=payload.role,
             )
         except ValueError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
@@ -1209,9 +1264,9 @@ def register_internal_routes(app, *, get_container, get_settings_fn) -> None:
             current,
             tenant_id=payload.tenant_id,
             action="provision",
-            resource_type="client_user",
+            resource_type="portal_user",
             resource_id=created["user_id"],
-            after={"email": created["email"], "role": "client_user"},
+            after={"email": created["email"], "role": payload.role},
         )
         return {
             "user_id": created["user_id"],
@@ -1224,7 +1279,7 @@ def register_internal_routes(app, *, get_container, get_settings_fn) -> None:
 
     @router.get("/portal/overview")
     async def portal_overview(current: Actor = Depends(actor)) -> dict:
-        _require_client(current)
+        _require_portal(current)
         assert current.tenant_id is not None
         ctx = await tenants().get(current.tenant_id)
         if ctx is None:
@@ -1238,6 +1293,10 @@ def register_internal_routes(app, *, get_container, get_settings_fn) -> None:
             "user": {
                 "email": current.email,
                 "role": current.role,
+                "capabilities": {
+                    "view_guest_contact": current.may_view_guest_contact(),
+                    "mutate_fleet": current.may_mutate_fleet(),
+                },
             },
         }
 
@@ -1247,7 +1306,7 @@ def register_internal_routes(app, *, get_container, get_settings_fn) -> None:
         date_from: Optional[str] = None,
         date_to: Optional[str] = None,
     ) -> dict:
-        _require_client(current)
+        _require_portal(current)
         assert current.tenant_id is not None
         try:
             return await ops().agency_analytics(
@@ -1255,5 +1314,96 @@ def register_internal_routes(app, *, get_container, get_settings_fn) -> None:
             )
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    @router.get("/portal/holds")
+    async def portal_holds(current: Actor = Depends(actor)) -> dict:
+        """Active option holds for the authenticated tenant (ED-17)."""
+        _require_portal(current)
+        assert current.tenant_id is not None
+        include_contact = current.may_view_guest_contact()
+        items = await ops().list_active_holds(
+            current.tenant_id, include_contact=include_contact
+        )
+        return {
+            "tenant_id": current.tenant_id,
+            "include_contact": include_contact,
+            "items": items,
+            "disclaimer": (
+                "Contact details are visible only to agency operations roles. "
+                "Holds expire automatically; this is not a confirmed booking."
+            ),
+        }
+
+    @router.get("/portal/fleet")
+    async def portal_fleet(current: Actor = Depends(actor)) -> dict:
+        """Fleet availability derived from inventory + active holds (ED-17)."""
+        _require_portal(current)
+        assert current.tenant_id is not None
+        from fivecent.services.plugin_yachting.persistence.fleet_admin import (
+            SqlFleetAdminRepo,
+        )
+        from fivecent.services.plugin_yachting.persistence.repos import SqlHoldRepo
+
+        sessions = getattr(tenants(), "_sessions")
+        boats = await SqlFleetAdminRepo(sessions).list_boats(current.tenant_id)
+        now = datetime.now(timezone.utc)
+        holds = await SqlHoldRepo(sessions).list_active(current.tenant_id, now)
+        held_boat_ids = {hold.boat_id for hold in holds}
+        items = []
+        for boat in boats:
+            status = "available"
+            if not boat.active:
+                status = "maintenance"
+            elif boat.boat_id in held_boat_ids:
+                status = "on_hold"
+            items.append(
+                {
+                    **boat.as_dict(),
+                    "availability_status": status,
+                    "in_maintenance": not boat.active,
+                }
+            )
+        return {
+            "tenant_id": current.tenant_id,
+            "can_mutate": current.may_mutate_fleet(),
+            "items": items,
+            "disclaimer": (
+                "active=false means the vessel is in maintenance / offline and is "
+                "excluded from quoting. Soft holds are temporary option blocks."
+            ),
+        }
+
+    @router.patch("/portal/fleet/{boat_id}")
+    async def portal_fleet_patch(
+        boat_id: str,
+        payload: PortalFleetPatch,
+        current: Actor = Depends(actor),
+    ) -> dict:
+        """Toggle maintenance/availability for agency_ops (ED-17)."""
+        _require_portal_ops(current)
+        assert current.tenant_id is not None
+        from fivecent.services.plugin_yachting.persistence.fleet_admin import (
+            SqlFleetAdminRepo,
+        )
+
+        sessions = getattr(tenants(), "_sessions")
+        updated = await SqlFleetAdminRepo(sessions).set_active(
+            current.tenant_id, boat_id, payload.active
+        )
+        if updated is None:
+            raise HTTPException(status_code=404, detail="Boat not found.")
+        await audit_write(
+            current,
+            tenant_id=current.tenant_id,
+            action="maintenance" if not payload.active else "activate",
+            resource_type="fleet_boat",
+            resource_id=boat_id,
+            after={"active": payload.active, "in_maintenance": not payload.active},
+        )
+        return {
+            **updated.as_dict(),
+            "availability_status": "available" if updated.active else "maintenance",
+            "in_maintenance": not updated.active,
+        }
 
     app.include_router(router)

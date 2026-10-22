@@ -192,6 +192,54 @@ class SqlOpsRepo:
         repo = SqlConversationRepo(self._sessions)
         return await repo.get_conversation(tenant_id, conversation_id)
 
+    async def list_active_holds(
+        self, tenant_id: str, *, include_contact: bool = False
+    ) -> list[dict]:
+        """Active soft holds for the executive portal (ED-17).
+
+        Guest contact fields are omitted unless include_contact is True
+        (agency_ops / company staff).
+        """
+        from fivecent.services.plugin_yachting.persistence.models import (
+            FleetInventory,
+            Hold,
+            Lead,
+        )
+
+        now = datetime.now(timezone.utc)
+        async with self._sessions() as session:
+            rows = (
+                await session.execute(
+                    select(Hold, Lead, FleetInventory)
+                    .outerjoin(Lead, Lead.id == Hold.lead_id)
+                    .outerjoin(FleetInventory, FleetInventory.id == Hold.boat_id)
+                    .where(Hold.tenant_id == tenant_id, Hold.expires_at > now)
+                    .order_by(Hold.expires_at.asc())
+                )
+            ).all()
+        items: list[dict] = []
+        for hold, lead, boat in rows:
+            item: dict = {
+                "hold_id": hold.id,
+                "boat_id": hold.boat_id,
+                "boat_name": boat.name if boat is not None else None,
+                "start_date": hold.start_date.isoformat() if hold.start_date else None,
+                "days": hold.days,
+                "expires_at": hold.expires_at.isoformat() if hold.expires_at else None,
+                "lead_id": hold.lead_id,
+                "conversation_id": hold.conversation_id,
+                "status": "active",
+            }
+            if include_contact and lead is not None:
+                item["contact"] = {
+                    "customer_name": lead.customer_name,
+                    "email": lead.email,
+                }
+            elif include_contact:
+                item["contact"] = None
+            items.append(item)
+        return items
+
     async def agency_analytics(
         self,
         tenant_id: str,

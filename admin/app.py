@@ -788,18 +788,27 @@ with users_tab:
                     elif revoked:
                         _error(revoked)
 
-        st.markdown("**Create client portal login (testing)**")
+        st.markdown("**Create portal login (testing)**")
         st.caption(
             "Sets email + password immediately — no invite token. "
-            "Client signs in on the Client portal page."
+            "client_user is read-only; agency_ops can see guest contacts and toggle fleet maintenance."
         )
         with st.form("provision_client"):
-            client_email = st.text_input("Client email", value="portal.test@fivecent.local")
+            client_email = st.text_input("Portal email", value="portal.test@fivecent.local")
             client_name = st.text_input("Display name", value="Portal Tester")
             client_password = st.text_input(
                 "Password (12+ chars)", value="portal-test-pass", type="password"
             )
-            provision_client = st.form_submit_button("Create / reset client login")
+            client_role = st.selectbox(
+                "Portal role",
+                options=["client_user", "agency_ops"],
+                format_func=lambda r: (
+                    "client_user (read-only analytics)"
+                    if r == "client_user"
+                    else "agency_ops (contacts + fleet maintenance)"
+                ),
+            )
+            provision_client = st.form_submit_button("Create / reset portal login")
         if provision_client:
             if not client_email.strip() or not client_name.strip() or not client_password:
                 st.error("Email, display name and password are required.")
@@ -812,13 +821,15 @@ with users_tab:
                         "display_name": client_name.strip(),
                         "tenant_id": selected,
                         "password": client_password,
+                        "role": client_role,
                     },
                 )
                 if resp is None:
                     st.stop()
                 if resp.is_success:
                     st.session_state["flash_success"] = (
-                        f"Client ready — sign in on Client portal as {client_email.strip()}"
+                        f"Portal ready ({client_role}) — sign in on Client portal as "
+                        f"{client_email.strip()}"
                     )
                     st.rerun()
                 else:
@@ -869,7 +880,29 @@ with users_tab:
 
 with ops_tab:
     st.subheader("Operational health")
-    st.caption("Queue/failure counters and AI spend. Configuration presence ≠ successful delivery.")
+    st.caption(
+        "Probes, queue/failure counters, dead-letter inbound, and broker alert outbox. "
+        "Configuration presence ≠ successful delivery. Secrets are never shown."
+    )
+    p1, p2, p3 = st.columns(3)
+    try:
+        with _client() as probe_client:
+            live = probe_client.get("/live")
+            ready = probe_client.get("/ready")
+            health = probe_client.get("/health")
+        p1.metric("Live", "ok" if live.is_success else f"HTTP {live.status_code}")
+        p2.metric("Ready", "ok" if ready.is_success else f"HTTP {ready.status_code}")
+        if health.is_success:
+            health_body = health.json() if health.headers.get("content-type", "").startswith("application/json") else {}
+            deps = health_body.get("dependencies") or health_body.get("checks") or {}
+            p3.metric("Health", "ok" if not deps else f"{len(deps)} checks")
+            with st.expander("Health detail (booleans / presence only)"):
+                st.json(health_body)
+        else:
+            p3.metric("Health", f"HTTP {health.status_code}")
+    except httpx.RequestError:
+        st.warning("Could not reach /live, /ready, or /health.")
+
     metrics_resp = api_request("GET", "/internal/metrics")
     if metrics_resp is None:
         st.stop()
@@ -896,19 +929,37 @@ with ops_tab:
     failed_resp = api_request("GET", "/internal/inbound/failed")
     if failed_resp and failed_resp.is_success:
         failed = failed_resp.json() or []
-        st.subheader("Failed inbound")
+        st.subheader("Failed inbound (dead letter)")
         if not failed:
             st.success("No failed inbound payloads.")
         else:
             st.dataframe(failed, hide_index=True, use_container_width=True)
             replay_id = st.text_input("Payload id to replay")
-            if st.button("Replay inbound") and replay_id.strip():
+            if st.button("Replay inbound", type="primary") and replay_id.strip():
                 replayed = api_request("POST", f"/internal/inbound/{replay_id.strip()}/replay")
                 if replayed and replayed.is_success:
-                    st.session_state["flash_success"] = "Replay queued"
+                    st.session_state["flash_success"] = "Replay completed (audited)"
                     st.rerun()
                 elif replayed:
                     _error(replayed)
+    alerts_resp = api_request("GET", "/internal/alerts/pending")
+    if alerts_resp and alerts_resp.is_success:
+        alerts = alerts_resp.json() or []
+        st.subheader("Broker alert outbox")
+        if not alerts:
+            st.success("No pending broker alerts.")
+        else:
+            st.dataframe(alerts, hide_index=True, use_container_width=True)
+            st.caption("Flush is platform-admin only and re-attempts delivery.")
+            if st.button("Flush pending alerts"):
+                flushed = api_request("POST", "/internal/alerts/flush")
+                if flushed and flushed.is_success:
+                    st.session_state["flash_success"] = "Alert flush requested"
+                    st.rerun()
+                elif flushed:
+                    _error(flushed)
+    elif alerts_resp and alerts_resp.status_code == 403:
+        st.caption("Alert outbox requires agency_admin+.")
 
 with brokers_tab:
     st.subheader("Brokers")

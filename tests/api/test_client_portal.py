@@ -237,3 +237,146 @@ async def test_analytics_date_filter_and_empty_range(admin_client) -> None:
     assert metrics["inquiries"] == 0
     assert metrics["leads"] == 0
     assert metrics["quotes"] == 0
+
+
+@pytest.mark.asyncio
+async def test_agency_ops_sees_contact_and_can_toggle_fleet(
+    container, admin_client
+) -> None:
+    """ED-17: client_user redacts PII and cannot mutate; agency_ops can."""
+    from datetime import date, timedelta
+    from uuid import uuid4
+
+    from fivecent.services.plugin_yachting.persistence.models import Hold, Lead
+
+    client, headers = admin_client
+    conversation_id = await container.conversations.claim_inbound(
+        InboundMessageEvent(
+            tenant_id="port-vauban",
+            channel="whatsapp",
+            user_channel_id="+33670002222",
+            text="hold seed",
+            provider_message_id="portal-hold-seed",
+            timestamp=datetime.now(timezone.utc),
+        ),
+        "user",
+    )
+    assert conversation_id
+
+    sessions = container.conversations._sessions
+    async with sessions() as session:
+        lead = Lead(
+            id=str(uuid4()),
+            tenant_id="port-vauban",
+            conversation_id=conversation_id,
+            customer_name="Guest Skipper",
+            email="guest@example.com",
+            boat_id="lagoon-450",
+            start_date=date.today() + timedelta(days=7),
+            days=3,
+            quote_id=None,
+            state="option",
+            created_at=datetime.now(timezone.utc),
+        )
+        session.add(lead)
+        session.add(
+            Hold(
+                id=str(uuid4()),
+                tenant_id="port-vauban",
+                boat_id="lagoon-450",
+                start_date=date.today() + timedelta(days=7),
+                days=3,
+                expires_at=datetime.now(timezone.utc) + timedelta(hours=20),
+                lead_id=lead.id,
+                created_at=datetime.now(timezone.utc),
+                conversation_id=conversation_id,
+            )
+        )
+        await session.commit()
+
+    viewer = client.post(
+        "/internal/portal/provision",
+        headers=headers,
+        json={
+            "email": "viewer.ed17@agency.test",
+            "display_name": "Viewer",
+            "tenant_id": "port-vauban",
+            "password": "viewer-ed17-pass",
+            "role": "client_user",
+        },
+    )
+    assert viewer.status_code == 200, viewer.text
+    ops = client.post(
+        "/internal/portal/provision",
+        headers=headers,
+        json={
+            "email": "ops.ed17@agency.test",
+            "display_name": "Ops",
+            "tenant_id": "port-vauban",
+            "password": "ops-ed17-passxx",
+            "role": "agency_ops",
+        },
+    )
+    assert ops.status_code == 200, ops.text
+
+    viewer_login = client.post(
+        "/internal/portal/login",
+        json={"email": "viewer.ed17@agency.test", "password": "viewer-ed17-pass"},
+    )
+    assert viewer_login.status_code == 200
+    viewer_h = {"Authorization": f"Bearer {viewer_login.json()['api_token']}"}
+
+    ops_login = client.post(
+        "/internal/portal/login",
+        json={"email": "ops.ed17@agency.test", "password": "ops-ed17-passxx"},
+    )
+    assert ops_login.status_code == 200
+    ops_h = {"Authorization": f"Bearer {ops_login.json()['api_token']}"}
+
+    me = client.get("/internal/me", headers=ops_h)
+    assert me.status_code == 200
+    assert me.json()["role"] == "agency_ops"
+    assert me.json()["capabilities"]["view_guest_contact"] is True
+    assert me.json()["capabilities"]["mutate_fleet"] is True
+
+    viewer_holds = client.get("/internal/portal/holds", headers=viewer_h)
+    assert viewer_holds.status_code == 200
+    assert viewer_holds.json()["include_contact"] is False
+    assert all("contact" not in item for item in viewer_holds.json()["items"])
+
+    ops_holds = client.get("/internal/portal/holds", headers=ops_h)
+    assert ops_holds.status_code == 200
+    assert ops_holds.json()["include_contact"] is True
+    contacts = [item.get("contact") for item in ops_holds.json()["items"] if item.get("contact")]
+    assert contacts and contacts[0]["email"] == "guest@example.com"
+
+    fleet = client.get("/internal/portal/fleet", headers=viewer_h)
+    assert fleet.status_code == 200
+    assert fleet.json()["can_mutate"] is False
+    boats = fleet.json()["items"]
+    assert boats
+    boat_id = boats[0]["boat_id"]
+
+    denied = client.patch(
+        f"/internal/portal/fleet/{boat_id}",
+        headers=viewer_h,
+        json={"active": False},
+    )
+    assert denied.status_code == 403
+
+    toggled = client.patch(
+        f"/internal/portal/fleet/{boat_id}",
+        headers=ops_h,
+        json={"active": False},
+    )
+    assert toggled.status_code == 200, toggled.text
+    assert toggled.json()["active"] is False
+    assert toggled.json()["in_maintenance"] is True
+
+    restored = client.patch(
+        f"/internal/portal/fleet/{boat_id}",
+        headers=ops_h,
+        json={"active": True},
+    )
+    assert restored.status_code == 200
+    assert restored.json()["active"] is True

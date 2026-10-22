@@ -69,6 +69,10 @@ class Conversation(Base):
     user_channel_id: Mapped[str] = mapped_column(String(128))
     assigned_broker_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
     handoff_status: Mapped[str] = mapped_column(String(32), default="open")
+    # Durable HITL mute expiry (ED-17). Cache TTL remains an accelerator only.
+    bot_muted_until: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     updated_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
 
 

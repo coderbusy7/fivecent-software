@@ -1,7 +1,8 @@
-"""Read-only client analytics portal (ED-15).
+"""Client executive portal (ED-15 / ED-17).
 
-Separate entry from the company admin workspace. Brokerage staff sign in with
-the email/password provisioned by company operators — no cross-agency selector.
+Separate entry from the company admin workspace. Portal users sign in with
+email/password provisioned by company operators — tenant is always taken from
+the authenticated actor (never from a client-supplied selector).
 """
 
 from __future__ import annotations
@@ -83,6 +84,19 @@ def _error(response: httpx.Response) -> None:
     st.error(f"{response.status_code}: {detail}")
 
 
+def _store_session(body: dict[str, Any]) -> None:
+    now = time.monotonic()
+    st.session_state["portal_session"] = {
+        "api_token": body["api_token"],
+        "email": body["email"],
+        "display_name": body.get("display_name") or body["email"],
+        "tenant_id": body["tenant_id"],
+        "role": body.get("role") or "client_user",
+        "started": now,
+        "last_seen": now,
+    }
+
+
 st.set_page_config(
     page_title="Fivecent | Client portal",
     page_icon=":material/analytics:",
@@ -90,7 +104,7 @@ st.set_page_config(
 )
 
 st.title("Fivecent")
-st.caption("CLIENT ANALYTICS PORTAL")
+st.caption("CLIENT EXECUTIVE DASHBOARD")
 
 portal_session = st.session_state.get("portal_session")
 if not _session_ok(portal_session):
@@ -100,7 +114,10 @@ if not _session_ok(portal_session):
 
     with tab_login:
         st.subheader("Agency sign in")
-        st.caption("Use the email your company operator invited. Company staff use the Admin page.")
+        st.caption(
+            "Use the email your company operator invited. "
+            "Company staff use the Admin page."
+        )
         with st.form("portal_login"):
             email = st.text_input("Email")
             password = st.text_input("Password", type="password")
@@ -118,21 +135,15 @@ if not _session_ok(portal_session):
             if response.status_code != 200:
                 _error(response)
             else:
-                body = response.json()
-                now = time.monotonic()
-                st.session_state["portal_session"] = {
-                    "api_token": body["api_token"],
-                    "email": body["email"],
-                    "display_name": body.get("display_name") or body["email"],
-                    "tenant_id": body["tenant_id"],
-                    "started": now,
-                    "last_seen": now,
-                }
+                _store_session(response.json())
                 st.rerun()
 
     with tab_invite:
         st.subheader("Activate invite")
-        st.caption("Paste the one-time invite token from your operator, then choose a password (12+ characters).")
+        st.caption(
+            "Paste the one-time invite token from your operator, then choose a "
+            "password (12+ characters)."
+        )
         with st.form("portal_set_password"):
             invite_token = st.text_input("Invite token")
             new_password = st.text_input("New password", type="password")
@@ -157,29 +168,13 @@ if not _session_ok(portal_session):
                 if response.status_code != 200:
                     _error(response)
                 else:
-                    body = response.json()
-                    now = time.monotonic()
-                    st.session_state["portal_session"] = {
-                        "api_token": body["api_token"],
-                        "email": body["email"],
-                        "display_name": body.get("display_name") or body["email"],
-                        "tenant_id": body["tenant_id"],
-                        "started": now,
-                        "last_seen": now,
-                    }
+                    _store_session(response.json())
                     st.success("Password saved — welcome.")
                     st.rerun()
     st.stop()
 
 assert isinstance(portal_session, dict)
 st.session_state["portal_session"]["last_seen"] = time.monotonic()
-
-with st.sidebar:
-    st.write(f"Signed in as **{portal_session.get('display_name')}**")
-    st.caption(portal_session.get("email", ""))
-    st.button("Sign out", on_click=_sign_out, use_container_width=True)
-    st.divider()
-    st.caption("Read-only agency analytics. Operational tools stay in the company admin.")
 
 overview = _portal_request("GET", "/internal/portal/overview")
 if overview is None:
@@ -189,41 +184,156 @@ if not overview.is_success:
     st.stop()
 
 agency = overview.json()
+caps = ((agency.get("user") or {}).get("capabilities")) or {}
+can_contact = bool(caps.get("view_guest_contact"))
+can_mutate = bool(caps.get("mutate_fleet"))
+role = (agency.get("user") or {}).get("role") or portal_session.get("role") or "client_user"
+
+with st.sidebar:
+    st.write(f"Signed in as **{portal_session.get('display_name')}**")
+    st.caption(portal_session.get("email", ""))
+    st.caption(f"Role: `{role}`")
+    st.button("Sign out", on_click=_sign_out, use_container_width=True)
+    st.divider()
+    if can_mutate:
+        st.caption("Agency operations: fleet maintenance enabled.")
+    else:
+        st.caption("Read-only analytics. Ask an agency_ops user for maintenance actions.")
+
 st.subheader(agency.get("agency_name") or "Your agency")
 st.caption(
     f"{agency.get('home_port') or '—'} · "
     f"{'Active' if agency.get('is_active') else 'Inactive'}"
 )
 
-today = date.today()
-default_from = today - timedelta(days=30)
-col_a, col_b = st.columns(2)
-with col_a:
-    date_from = st.date_input("From", value=default_from)
-with col_b:
-    date_to = st.date_input("To", value=today)
-
-analytics = _portal_request(
-    "GET",
-    "/internal/portal/analytics",
-    params={"date_from": date_from.isoformat(), "date_to": date_to.isoformat()},
+tab_funnel, tab_holds, tab_fleet = st.tabs(
+    ["Executive funnel", "Active option holds", "Fleet availability"]
 )
-if analytics is None:
-    st.stop()
-if not analytics.is_success:
-    _error(analytics)
-    st.stop()
 
-body = analytics.json()
-metrics = body.get("metrics") or {}
-if not any(int(metrics.get(key) or 0) for key in metrics):
-    st.info("No activity in this date range yet.")
-else:
-    m1, m2, m3, m4, m5 = st.columns(5)
-    m1.metric("Inquiries", metrics.get("inquiries", 0))
-    m2.metric("Conversations", metrics.get("active_conversations", 0))
-    m3.metric("Leads", metrics.get("leads", 0))
-    m4.metric("Quotes", metrics.get("quotes", 0))
-    m5.metric("Broker handoffs", metrics.get("broker_handoffs", 0))
+with tab_funnel:
+    today = date.today()
+    default_from = today - timedelta(days=30)
+    col_a, col_b = st.columns(2)
+    with col_a:
+        date_from = st.date_input("From", value=default_from)
+    with col_b:
+        date_to = st.date_input("To", value=today)
 
-st.caption(body.get("disclaimer") or "")
+    with st.spinner("Loading funnel metrics…"):
+        analytics = _portal_request(
+            "GET",
+            "/internal/portal/analytics",
+            params={"date_from": date_from.isoformat(), "date_to": date_to.isoformat()},
+        )
+    if analytics is None:
+        st.stop()
+    if not analytics.is_success:
+        _error(analytics)
+    else:
+        body = analytics.json()
+        metrics = body.get("metrics") or {}
+        if not any(int(metrics.get(key) or 0) for key in metrics):
+            st.info("No activity in this date range yet.")
+        else:
+            m1, m2, m3, m4, m5 = st.columns(5)
+            m1.metric("Inquiries", metrics.get("inquiries", 0))
+            m2.metric("Conversations", metrics.get("active_conversations", 0))
+            m3.metric("Leads", metrics.get("leads", 0))
+            m4.metric("Quotes", metrics.get("quotes", 0))
+            m5.metric("Broker handoffs", metrics.get("broker_handoffs", 0))
+        st.caption(body.get("disclaimer") or "")
+
+with tab_holds:
+    with st.spinner("Loading active holds…"):
+        holds_resp = _portal_request("GET", "/internal/portal/holds")
+    if holds_resp is None:
+        st.stop()
+    if not holds_resp.is_success:
+        _error(holds_resp)
+    else:
+        holds_body = holds_resp.json()
+        items = holds_body.get("items") or []
+        if not items:
+            st.info("No active option holds right now.")
+        else:
+            rows = []
+            for item in items:
+                row = {
+                    "Boat": item.get("boat_name") or item.get("boat_id"),
+                    "Start": item.get("start_date"),
+                    "Days": item.get("days"),
+                    "Expires": item.get("expires_at"),
+                    "Status": item.get("status"),
+                }
+                contact = item.get("contact")
+                if can_contact and isinstance(contact, dict):
+                    row["Guest"] = contact.get("customer_name")
+                    row["Email"] = contact.get("email")
+                rows.append(row)
+            st.dataframe(rows, hide_index=True, use_container_width=True)
+            if not can_contact:
+                st.caption("Guest contact details are hidden for your role.")
+        st.caption(holds_body.get("disclaimer") or "")
+
+with tab_fleet:
+    with st.spinner("Loading fleet…"):
+        fleet_resp = _portal_request("GET", "/internal/portal/fleet")
+    if fleet_resp is None:
+        st.stop()
+    if not fleet_resp.is_success:
+        _error(fleet_resp)
+    else:
+        fleet_body = fleet_resp.json()
+        boats = fleet_body.get("items") or []
+        if not boats:
+            st.info("No fleet inventory for this agency yet.")
+        else:
+            st.dataframe(
+                [
+                    {
+                        "Boat": b.get("name"),
+                        "Status": b.get("availability_status"),
+                        "Length (m)": b.get("length_m"),
+                        "Capacity": b.get("capacity"),
+                        "Active": b.get("active"),
+                    }
+                    for b in boats
+                ],
+                hide_index=True,
+                use_container_width=True,
+            )
+            if can_mutate:
+                st.markdown("**Maintenance toggle**")
+                st.caption(
+                    "Setting a vessel offline (`active=false`) excludes it from quoting."
+                )
+                options = {
+                    f"{b.get('name')} ({b.get('boat_id')}) — "
+                    f"{'online' if b.get('active') else 'maintenance'}": b
+                    for b in boats
+                }
+                with st.form("fleet_maintenance"):
+                    chosen = st.selectbox("Vessel", options=list(options.keys()))
+                    set_online = st.radio(
+                        "Availability",
+                        options=["online", "maintenance"],
+                        horizontal=True,
+                    )
+                    submit_maint = st.form_submit_button("Update availability")
+                if submit_maint and chosen:
+                    boat = options[chosen]
+                    resp = _portal_request(
+                        "PATCH",
+                        f"/internal/portal/fleet/{boat['boat_id']}",
+                        json={"active": set_online == "online"},
+                    )
+                    if resp is None:
+                        st.stop()
+                    if resp.is_success:
+                        st.success("Fleet availability updated.")
+                        st.rerun()
+                    else:
+                        _error(resp)
+            else:
+                st.caption("Fleet maintenance requires the agency_ops role.")
+        st.caption(fleet_body.get("disclaimer") or "")

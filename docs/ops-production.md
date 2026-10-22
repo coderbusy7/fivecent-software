@@ -68,8 +68,11 @@ Redis conversation locks renew while held (`LOCK_TTL_SECONDS=120`, renew every 6
   - audit log: `RETENTION_AUDIT_DAYS` (default 730)
 - Conversation export/delete under agency-admin authorization with audit records.
 
-## Operator inbox & roles (ED-6 / ED-7)
+## Operator inbox & roles (ED-6 / ED-7 / ED-17)
 
 - Inbox: `/internal/tenants/{id}/conversations` + takeover / resume-bot / manual reply.
-- Named users: `POST /internal/users` (platform admin); bearer tokens hashed at rest; disable clears the hash.
+- HITL mute is durable (`conversations.bot_muted_until`) plus Redis accelerator; resume clears both.
+- Named users: `POST /internal/users` (platform admin, company roles only); bearer tokens hashed at rest; disable clears the hash.
+- Portal roles (`client_user`, `agency_ops`): invite/provision under `/internal/portal/*` — see `docs/dashboards.md`.
 - Env `ADMIN_API_TOKEN` remains a platform-admin escape hatch for the pilot.
+- Admin Ops tab surfaces `/live`, `/ready`, `/health`, failed inbound replay (audited), and alert outbox.
