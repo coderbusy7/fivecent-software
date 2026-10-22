@@ -114,6 +114,25 @@ class WhatsAppTestSend(BaseModel):
     tenant_id: Optional[str] = None
 
 
+class BoatUpsert(BaseModel):
+    boat_id: str = Field(min_length=1, max_length=64)
+    name: str = Field(min_length=1, max_length=255)
+    length_m: Decimal
+    capacity: int = Field(ge=1, le=12)
+    low_season_daily_rate: Decimal
+    high_season_daily_rate: Decimal
+    skipper_daily_rate: Decimal
+    active: bool = True
+
+
+class FleetImport(BaseModel):
+    boats: list[dict] = Field(min_length=1, max_length=200)
+
+
+class BoatActivePatch(BaseModel):
+    active: bool
+
+
 def _require_admin(settings: Settings, authorization: str) -> None:
     token = settings.admin_api_token
     if not token:
@@ -175,6 +194,16 @@ def register_internal_routes(app, *, get_container, get_settings_fn) -> None:
         if not isinstance(repo, SqlTenantRepo):
             raise HTTPException(status_code=500, detail="Tenant admin is unavailable.")
         return repo
+
+    def fleet_admin():
+        from fivecent.services.plugin_yachting.persistence.fleet_admin import (
+            SqlFleetAdminRepo,
+        )
+
+        sessions = getattr(tenants(), "_sessions", None)
+        if sessions is None:
+            raise HTTPException(status_code=500, detail="Fleet admin is unavailable.")
+        return SqlFleetAdminRepo(sessions)
 
     def conversations() -> SqlConversationRepo:
         container: Container = get_container()
@@ -271,6 +300,108 @@ def register_internal_routes(app, *, get_container, get_settings_fn) -> None:
         if invite is None:
             raise HTTPException(status_code=404, detail="Tenant not found.")
         return invite
+
+    @router.get("/tenants/{tenant_id}/setup-status", dependencies=[Depends(admin)])
+    async def tenant_setup_status(tenant_id: str) -> dict:
+        from fivecent.config import get_settings as _gs
+
+        ctx = await tenants().get(tenant_id)
+        if ctx is None:
+            raise HTTPException(status_code=404, detail="Tenant not found.")
+        boats = await fleet_admin().list_boats(tenant_id)
+        active_boats = sum(1 for boat in boats if boat.active)
+        settings = _gs()
+        phone_ok = bool(
+            (ctx.whatsapp_phone_number_id or "").strip()
+            and ctx.whatsapp_phone_number_id != "seed-phone-number-id"
+        )
+        desk_ok = bool((ctx.telegram_chat_id or "").strip())
+        broker_ok = any(
+            (b.telegram_chat_id or "").strip() for b in ctx.active_brokers
+        ) or desk_ok
+        checks = {
+            "agency_active": bool(ctx.is_active),
+            "whatsapp_phone_configured": phone_ok,
+            "has_active_boat": active_boats > 0,
+            "active_boat_count": active_boats,
+            "telegram_desk_or_broker": broker_ok,
+            "telegram_bot_configured": bool(settings.telegram_bot_token),
+            # Never return secret values — presence only.
+            "whatsapp_access_token_present": bool(settings.whatsapp_access_token),
+        }
+        if not ctx.is_active or active_boats == 0:
+            status = "draft"
+        elif not phone_ok or not checks["whatsapp_access_token_present"]:
+            status = "misconfigured"
+        elif not broker_ok:
+            status = "misconfigured"
+        else:
+            status = "ready"
+        return {
+            "tenant_id": tenant_id,
+            "status": status,
+            "checks": checks,
+        }
+
+    @router.get("/tenants/{tenant_id}/fleet", dependencies=[Depends(admin)])
+    async def list_fleet(tenant_id: str) -> list[dict]:
+        if await tenants().get(tenant_id) is None:
+            raise HTTPException(status_code=404, detail="Tenant not found.")
+        return [boat.as_dict() for boat in await fleet_admin().list_boats(tenant_id)]
+
+    @router.post("/tenants/{tenant_id}/fleet", dependencies=[Depends(admin)])
+    async def upsert_fleet_boat(tenant_id: str, payload: BoatUpsert) -> dict:
+        from fivecent.services.plugin_yachting.persistence.fleet_admin import (
+            FleetValidationError,
+        )
+
+        if await tenants().get(tenant_id) is None:
+            raise HTTPException(status_code=404, detail="Tenant not found.")
+        try:
+            boat = await fleet_admin().upsert_boat(
+                tenant_id,
+                boat_id=payload.boat_id,
+                name=payload.name,
+                length_m=payload.length_m,
+                capacity=payload.capacity,
+                low_season_daily_rate=payload.low_season_daily_rate,
+                high_season_daily_rate=payload.high_season_daily_rate,
+                skipper_daily_rate=payload.skipper_daily_rate,
+                active=payload.active,
+            )
+        except FleetValidationError as exc:
+            raise HTTPException(
+                status_code=422, detail={"message": str(exc), "field": exc.field}
+            ) from exc
+        return boat.as_dict()
+
+    @router.patch(
+        "/tenants/{tenant_id}/fleet/{boat_id}", dependencies=[Depends(admin)]
+    )
+    async def patch_fleet_boat(
+        tenant_id: str, boat_id: str, payload: BoatActivePatch
+    ) -> dict:
+        boat = await fleet_admin().set_active(tenant_id, boat_id, payload.active)
+        if boat is None:
+            raise HTTPException(status_code=404, detail="Boat not found.")
+        return boat.as_dict()
+
+    @router.post("/tenants/{tenant_id}/fleet/import", dependencies=[Depends(admin)])
+    async def import_fleet(tenant_id: str, payload: FleetImport) -> dict:
+        if await tenants().get(tenant_id) is None:
+            raise HTTPException(status_code=404, detail="Tenant not found.")
+        result = await fleet_admin().import_boats(tenant_id, payload.boats)
+        status = 200 if not result["errors"] else 207
+        return {"status": status, **result}
+
+    @router.post(
+        "/tenants/{tenant_id}/fleet/seed-starter", dependencies=[Depends(admin)]
+    )
+    async def seed_starter_fleet(tenant_id: str) -> dict:
+        if await tenants().get(tenant_id) is None:
+            raise HTTPException(status_code=404, detail="Tenant not found.")
+        boats = await fleet_admin().seed_starter_fleet(tenant_id)
+        return {"boats": [boat.as_dict() for boat in boats]}
 
     @router.post("/tenants/{tenant_id}/brokers", dependencies=[Depends(admin)])
     async def add_broker(tenant_id: str, payload: BrokerCreate) -> dict:

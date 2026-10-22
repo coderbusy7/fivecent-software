@@ -46,10 +46,36 @@ def ui(monkeypatch):
         requests.append(request)
         if response_status[0] != 200:
             return httpx.Response(response_status[0], json={"detail": "API unavailable"})
+        path = request.url.path
         if request.method == "PATCH":
+            if "/fleet/" in path:
+                return httpx.Response(200, json={"boat_id": "agency-one__demo", "active": False})
             tenant.update(json.loads(request.content))
-        data = [tenant] if request.url.path == "/internal/tenants" else tenant
-        return httpx.Response(200, json=data)
+        if path == "/internal/tenants":
+            return httpx.Response(200, json=[tenant])
+        if path.endswith("/fleet"):
+            if request.method == "POST":
+                return httpx.Response(
+                    200,
+                    json={
+                        "boat_id": "agency-one__demo",
+                        "name": "Demo",
+                        "active": True,
+                    },
+                )
+            return httpx.Response(200, json=[])
+        if path.endswith("/setup-status"):
+            return httpx.Response(
+                200,
+                json={
+                    "tenant_id": "agency-one",
+                    "status": "draft",
+                    "checks": {"has_active_boat": False, "whatsapp_access_token_present": True},
+                },
+            )
+        if path.endswith("/fleet/seed-starter"):
+            return httpx.Response(200, json={"boats": []})
+        return httpx.Response(200, json=tenant)
 
     original_client = httpx.Client
     monkeypatch.setattr(
@@ -96,7 +122,7 @@ def test_valid_login_dashboard_save_and_logout(ui):
     app, requests, _ = ui
     app.run()
     sign_in(app)
-    assert len(app.tabs) == 7
+    assert len(app.tabs) == 9
     assert [metric.value for metric in app.metric] == ["1", "1", "0"]
     assert all(request.headers["Authorization"] == "Bearer backend-test-token" for request in requests)
     assert not any(field.label in {"Admin token", "API base URL"} for field in app.text_input)

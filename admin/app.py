@@ -192,8 +192,28 @@ if tenant is not None:
         f"{'Active' if tenant.get('is_active') else 'Inactive'}"
     )
 
-create_tab, identity_tab, money_tab, ai_service_tab, flags_tab, telegram_tab, brokers_tab = st.tabs(
-    ["New agency", "Identity", "Money", "AI & service", "Flags", "Telegram", "Brokers"]
+(
+    create_tab,
+    setup_tab,
+    identity_tab,
+    money_tab,
+    fleet_tab,
+    ai_service_tab,
+    flags_tab,
+    telegram_tab,
+    brokers_tab,
+) = st.tabs(
+    [
+        "New agency",
+        "Setup",
+        "Identity",
+        "Money",
+        "Fleet",
+        "AI & service",
+        "Flags",
+        "Telegram",
+        "Brokers",
+    ]
 )
 
 with create_tab:
@@ -234,6 +254,27 @@ with create_tab:
 if tenant is None:
     st.stop()
 
+with setup_tab:
+    st.subheader("Onboarding checklist")
+    st.caption("Connection checks never display secret token values.")
+    status_resp = api_request("GET", f"/internal/tenants/{selected}/setup-status")
+    if status_resp is None:
+        st.stop()
+    if status_resp.is_success:
+        body = status_resp.json()
+        badge = body.get("status", "draft")
+        if badge == "ready":
+            st.success("Agency status: ready")
+        elif badge == "misconfigured":
+            st.warning("Agency status: misconfigured")
+        else:
+            st.info("Agency status: draft")
+        checks = body.get("checks") or {}
+        for key, value in checks.items():
+            st.write(f"- `{key}`: {'yes' if value else 'no'}" if isinstance(value, bool) else f"- `{key}`: {value}")
+    else:
+        _error(status_resp)
+
 with identity_tab:
     st.subheader(tenant["agency_name"])
     with st.form("identity"):
@@ -265,6 +306,99 @@ with identity_tab:
             st.stop()
         if response.is_success:
             st.success("Saved identity")
+            st.rerun()
+        else:
+            _error(response)
+
+with fleet_tab:
+    st.subheader("Fleet inventory")
+    st.caption(
+        "Boat ids are namespaced per agency (`{tenant}__{boat}`) so two agencies "
+        "can both operate a Lagoon 450 without colliding."
+    )
+    fleet_resp = api_request("GET", f"/internal/tenants/{selected}/fleet")
+    if fleet_resp is None:
+        st.stop()
+    if fleet_resp.is_success:
+        boats = fleet_resp.json()
+        if not isinstance(boats, list):
+            boats = []
+        if not boats:
+            st.info("No boats yet. Seed a starter fleet or add one below.")
+        else:
+            for boat in boats:
+                if not isinstance(boat, dict):
+                    continue
+                state = "active" if boat.get("active") else "inactive"
+                st.write(
+                    f"- `{boat.get('boat_id')}` · {boat.get('name')} · "
+                    f"{boat.get('capacity')} pax · low {boat.get('low_season_daily_rate')} · {state}"
+                )
+        cols = st.columns(2)
+        with cols[0]:
+            if st.button("Seed starter fleet (Lagoon + Sunseeker)"):
+                seeded = api_request(
+                    "POST", f"/internal/tenants/{selected}/fleet/seed-starter"
+                )
+                if seeded is None:
+                    st.stop()
+                if seeded.is_success:
+                    st.success("Starter fleet ready")
+                    st.rerun()
+                else:
+                    _error(seeded)
+        with cols[1]:
+            st.caption("Deactivate a boat instead of deleting historical holds.")
+    else:
+        _error(fleet_resp)
+
+    with st.form("fleet_upsert"):
+        boat_id = st.text_input("Boat id", placeholder="lagoon-450")
+        boat_name = st.text_input("Name", placeholder="Lagoon 450")
+        length_m = st.number_input("Length (m)", min_value=1.0, value=14.0, step=0.1)
+        capacity = st.number_input("Capacity", min_value=1, max_value=12, value=12, step=1)
+        low = st.number_input("Low season daily rate", min_value=0.0, value=1800.0, step=50.0)
+        high = st.number_input("High season daily rate", min_value=0.0, value=2200.0, step=50.0)
+        skipper = st.number_input("Skipper daily rate", min_value=0.0, value=350.0, step=10.0)
+        active = st.checkbox("Active", value=True)
+        save_boat = st.form_submit_button("Save boat")
+    if save_boat:
+        response = api_request(
+            "POST",
+            f"/internal/tenants/{selected}/fleet",
+            json={
+                "boat_id": boat_id.strip(),
+                "name": boat_name.strip(),
+                "length_m": str(length_m),
+                "capacity": int(capacity),
+                "low_season_daily_rate": str(low),
+                "high_season_daily_rate": str(high),
+                "skipper_daily_rate": str(skipper),
+                "active": active,
+            },
+        )
+        if response is None:
+            st.stop()
+        if response.is_success:
+            st.success(f"Saved {response.json().get('boat_id')}")
+            st.rerun()
+        else:
+            _error(response)
+
+    with st.form("fleet_deactivate"):
+        deactivate_id = st.text_input("Boat id to deactivate/reactivate")
+        make_active = st.checkbox("Set active", value=False)
+        toggle = st.form_submit_button("Update active flag")
+    if toggle and deactivate_id.strip():
+        response = api_request(
+            "PATCH",
+            f"/internal/tenants/{selected}/fleet/{deactivate_id.strip()}",
+            json={"active": make_active},
+        )
+        if response is None:
+            st.stop()
+        if response.is_success:
+            st.success("Updated boat active flag")
             st.rerun()
         else:
             _error(response)

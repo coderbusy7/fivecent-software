@@ -153,6 +153,11 @@ class SqlTenantRepo:
                 )
             )
             await session.commit()
+            # Fresh agencies get a namespaced starter fleet (no shared boat PKs).
+            from fivecent.services.plugin_yachting.persistence.seed import seed_fleet
+
+            await seed_fleet(session, tenant_id, namespace=True)
+            await session.commit()
         self.invalidate_routing()
         context = await self.get(tenant_id)
         assert context is not None

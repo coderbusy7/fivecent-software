@@ -27,13 +27,29 @@ FLEET = (
 )
 
 
-async def seed_fleet(session: AsyncSession, tenant_id: str) -> None:
+async def seed_fleet(
+    session: AsyncSession, tenant_id: str, *, namespace: bool = False
+) -> None:
+    """Insert starter boats. Non-seed tenants namespace ids as `{tenant}__{boat}`."""
     for boat in FLEET:
+        boat_id = f"{tenant_id}__{boat['id']}" if namespace else boat["id"]
         found = await session.execute(
             select(FleetInventory).where(
-                FleetInventory.id == boat["id"],
+                FleetInventory.id == boat_id,
                 FleetInventory.tenant_id == tenant_id,
             )
         )
         if found.scalar_one_or_none() is None:
-            session.add(FleetInventory(tenant_id=tenant_id, active=True, **boat))
+            session.add(
+                FleetInventory(
+                    id=boat_id,
+                    tenant_id=tenant_id,
+                    name=boat["name"],
+                    length_m=boat["length_m"],
+                    capacity=boat["capacity"],
+                    low_season_daily_rate=boat["low_season_daily_rate"],
+                    high_season_daily_rate=boat["high_season_daily_rate"],
+                    skipper_daily_rate=boat["skipper_daily_rate"],
+                    active=True,
+                )
+            )
