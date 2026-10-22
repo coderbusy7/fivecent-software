@@ -359,7 +359,9 @@ def test_webhook_accepts_signed_payload(container, settings) -> None:
             headers={"X-Hub-Signature-256": f"sha256={digest}"},
         )
         assert response.status_code == 200
-        assert response.json() == {"status": "ok"}
+        body_json = response.json()
+        assert body_json["status"] == "ok"
+        assert body_json.get("payload_id")
         assert len(queue.events) == 1
         assert queue.events[0].text == "Hi!"
 

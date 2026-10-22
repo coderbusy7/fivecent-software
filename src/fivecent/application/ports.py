@@ -105,7 +105,15 @@ class TenantRepo(Protocol):
 
 class ConversationRepo(Protocol):
     async def claim_inbound(self, event: InboundMessageEvent, role: str) -> Optional[str]:
-        """Insert inbound message. Returns conversation_id or None if duplicate."""
+        """Claim inbound for processing. None means a terminal duplicate."""
+
+    async def mark_inbound(
+        self,
+        tenant_id: str,
+        provider_message_id: str,
+        status: str,
+        reason: Optional[str] = None,
+    ) -> None: ...
 
     async def recent_turns(
         self, tenant_id: str, channel: str, user_channel_id: str, limit: int = 15
@@ -125,7 +133,15 @@ class ConversationRepo(Protocol):
 
     async def record_raw_inbound(
         self, *, tenant_id: Optional[str], channel: str, body: str
+    ) -> str: ...
+
+    async def mark_raw_inbound(
+        self, payload_id: str, *, status: str, error: Optional[str] = None
     ) -> None: ...
+
+    async def get_raw_inbound(self, payload_id: str) -> Optional[dict]: ...
+
+    async def list_failed_raw_inbound(self, *, limit: int = 50) -> list[dict]: ...
 
 
 class LLMPort(Protocol):

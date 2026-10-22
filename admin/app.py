@@ -411,6 +411,42 @@ with telegram_tab:
     st.code(f"/mute_<guest_digits>_{selected}", language=None)
     st.caption("Shown on each lead card. Sets a 24h human-active circuit breaker for that WhatsApp guest.")
 
+    st.divider()
+    st.subheader("WhatsApp test send")
+    st.caption(
+        "Sends a free-form Cloud API message from this agency’s phone number. "
+        "Recipient must be allowed in Meta (test numbers) and ideally inside a 24h session."
+    )
+    with st.form("whatsapp_test_send"):
+        test_phone = st.text_input(
+            "Recipient phone",
+            value="0033621611871",
+            help="International digits; 00 or + prefix is fine.",
+        )
+        test_message = st.text_area(
+            "Message",
+            value="Fivecent test: Elena is online. Reply here to continue.",
+            height=80,
+        )
+        send_test = st.form_submit_button("Send test WhatsApp", use_container_width=True)
+    if send_test:
+        response = api_request(
+            "POST",
+            "/internal/whatsapp/test-send",
+            json={
+                "phone": test_phone.strip(),
+                "message": test_message.strip(),
+                "tenant_id": selected,
+            },
+        )
+        if response is None:
+            st.stop()
+        if response.is_success:
+            body = response.json()
+            st.success(f"Sent to {body.get('to')} · outbound `{body.get('outbound_id')}`")
+        else:
+            _error(response)
+
 with brokers_tab:
     st.subheader("Brokers")
     rows = tenant.get("brokers") or []

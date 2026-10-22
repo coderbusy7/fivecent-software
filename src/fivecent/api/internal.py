@@ -1,14 +1,23 @@
 from __future__ import annotations
 
+import json
 from decimal import Decimal
 from typing import Optional
 
-from fastapi import APIRouter, Depends, Header, HTTPException
-from pydantic import BaseModel, Field
+from fastapi import APIRouter, Depends, Header, HTTPException, Request
+from pydantic import BaseModel, Field, field_validator
 
+from fivecent.adapters.persistence.repos import SqlConversationRepo
 from fivecent.adapters.persistence.tenants import SqlTenantRepo
 from fivecent.application.ports import Container
 from fivecent.config import Settings
+from fivecent.domain.tenancy import (
+    TenantConfigError,
+    validate_feature_flags,
+    validate_rate,
+    validate_routing_mode,
+)
+
 
 class TenantCreate(BaseModel):
     tenant_id: str = Field(min_length=1, max_length=64)
@@ -25,6 +34,23 @@ class TenantCreate(BaseModel):
     llm_model: str = Field(default="gpt-4o-mini", min_length=1, max_length=128)
     routing_mode: str = "broadcast"
     feature_flags: Optional[dict] = None
+
+    @field_validator("vat_rate", "apa_rate", "max_discount_pct", mode="before")
+    @classmethod
+    def _rate(cls, value: object) -> Decimal:
+        return validate_rate("rate", Decimal(str(value)))
+
+    @field_validator("routing_mode")
+    @classmethod
+    def _routing(cls, value: str) -> str:
+        return validate_routing_mode(value)
+
+    @field_validator("feature_flags")
+    @classmethod
+    def _flags(cls, value: Optional[dict]) -> Optional[dict]:
+        if value is None:
+            return None
+        return validate_feature_flags(value)
 
 
 class TenantPatch(BaseModel):
@@ -44,6 +70,27 @@ class TenantPatch(BaseModel):
     telegram_chat_id: Optional[str] = None
     is_active: Optional[bool] = None
 
+    @field_validator("vat_rate", "apa_rate", "max_discount_pct", mode="before")
+    @classmethod
+    def _rate(cls, value: object) -> Optional[Decimal]:
+        if value is None:
+            return None
+        return validate_rate("rate", Decimal(str(value)))
+
+    @field_validator("routing_mode")
+    @classmethod
+    def _routing(cls, value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return None
+        return validate_routing_mode(value)
+
+    @field_validator("feature_flags")
+    @classmethod
+    def _flags(cls, value: Optional[dict]) -> Optional[dict]:
+        if value is None:
+            return None
+        return validate_feature_flags(value)
+
 
 class BrokerCreate(BaseModel):
     name: str
@@ -55,6 +102,16 @@ class BrokerCreate(BaseModel):
 class BrokerPatch(BaseModel):
     is_active: Optional[bool] = None
     telegram_chat_id: Optional[str] = None
+
+
+class WhatsAppTestSend(BaseModel):
+    phone: str = Field(min_length=8, max_length=32)
+    message: str = Field(
+        default="Fivecent test: Elena is online. Reply here to continue.",
+        min_length=1,
+        max_length=1000,
+    )
+    tenant_id: Optional[str] = None
 
 
 def _require_admin(settings: Settings, authorization: str) -> None:
@@ -103,6 +160,7 @@ def _serialize_tenant(ctx, *, telegram_bot_username: str = "fivecent_test_bot") 
 
 def register_internal_routes(app, *, get_container, get_settings_fn) -> None:
     router = APIRouter(prefix="/internal", tags=["internal-admin"])
+
     def admin(
         authorization: str = Header(default=""),
     ) -> None:
@@ -113,6 +171,13 @@ def register_internal_routes(app, *, get_container, get_settings_fn) -> None:
         repo = container.tenants
         if not isinstance(repo, SqlTenantRepo):
             raise HTTPException(status_code=500, detail="Tenant admin is unavailable.")
+        return repo
+
+    def conversations() -> SqlConversationRepo:
+        container: Container = get_container()
+        repo = container.conversations
+        if not isinstance(repo, SqlConversationRepo):
+            raise HTTPException(status_code=500, detail="Conversation admin is unavailable.")
         return repo
 
     def bot_username() -> str:
@@ -128,33 +193,39 @@ def register_internal_routes(app, *, get_container, get_settings_fn) -> None:
         if llm_provider not in container.providers.keys:
             raise HTTPException(status_code=422, detail="LLM provider is not configured.")
 
+    def config_http(exc: TenantConfigError) -> HTTPException:
+        return HTTPException(status_code=422, detail=str(exc))
+
     @router.get("/tenants", dependencies=[Depends(admin)])
     async def list_tenants() -> list[dict]:
         return [serialize(ctx) for ctx in await tenants().list_all()]
 
     @router.post("/tenants", dependencies=[Depends(admin)])
     async def create_tenant(payload: TenantCreate) -> dict:
-        validate_plugins(payload.service_type, payload.llm_provider)
-        repo = tenants()
-        if await repo.get(payload.tenant_id):
-            raise HTTPException(status_code=409, detail="Tenant already exists.")
-        ctx = await repo.create_tenant(
-            tenant_id=payload.tenant_id,
-            agency_name=payload.agency_name,
-            home_port=payload.home_port,
-            whatsapp_phone_number_id=payload.whatsapp_phone_number_id,
-            whatsapp_waba_id=payload.whatsapp_waba_id,
-            currency=payload.currency,
-            vat_rate=payload.vat_rate,
-            apa_rate=payload.apa_rate,
-            max_discount_pct=payload.max_discount_pct,
-            service_type=payload.service_type,
-            llm_provider=payload.llm_provider,
-            llm_model=payload.llm_model,
-            routing_mode=payload.routing_mode,
-            feature_flags=payload.feature_flags,
-        )
-        return serialize(ctx)
+        try:
+            validate_plugins(payload.service_type, payload.llm_provider)
+            repo = tenants()
+            if await repo.get(payload.tenant_id):
+                raise HTTPException(status_code=409, detail="Tenant already exists.")
+            ctx = await repo.create_tenant(
+                tenant_id=payload.tenant_id,
+                agency_name=payload.agency_name,
+                home_port=payload.home_port,
+                whatsapp_phone_number_id=payload.whatsapp_phone_number_id,
+                whatsapp_waba_id=payload.whatsapp_waba_id,
+                currency=payload.currency,
+                vat_rate=payload.vat_rate,
+                apa_rate=payload.apa_rate,
+                max_discount_pct=payload.max_discount_pct,
+                service_type=payload.service_type,
+                llm_provider=payload.llm_provider,
+                llm_model=payload.llm_model,
+                routing_mode=payload.routing_mode,
+                feature_flags=payload.feature_flags,
+            )
+            return serialize(ctx)
+        except TenantConfigError as exc:
+            raise config_http(exc) from exc
 
     @router.get("/tenants/{tenant_id}", dependencies=[Depends(admin)])
     async def get_tenant(tenant_id: str) -> dict:
@@ -165,17 +236,22 @@ def register_internal_routes(app, *, get_container, get_settings_fn) -> None:
 
     @router.patch("/tenants/{tenant_id}", dependencies=[Depends(admin)])
     async def patch_tenant(tenant_id: str, payload: TenantPatch) -> dict:
-        current = await tenants().get(tenant_id)
-        if current is None:
-            raise HTTPException(status_code=404, detail="Tenant not found.")
-        validate_plugins(
-            payload.service_type or current.service_type,
-            payload.llm_provider or current.llm_provider,
-        )
-        ctx = await tenants().update_tenant(tenant_id, **payload.model_dump(exclude_unset=True))
-        if ctx is None:
-            raise HTTPException(status_code=404, detail="Tenant not found.")
-        return serialize(ctx)
+        try:
+            current = await tenants().get(tenant_id)
+            if current is None:
+                raise HTTPException(status_code=404, detail="Tenant not found.")
+            validate_plugins(
+                payload.service_type or current.service_type,
+                payload.llm_provider or current.llm_provider,
+            )
+            ctx = await tenants().update_tenant(
+                tenant_id, **payload.model_dump(exclude_unset=True)
+            )
+            if ctx is None:
+                raise HTTPException(status_code=404, detail="Tenant not found.")
+            return serialize(ctx)
+        except TenantConfigError as exc:
+            raise config_http(exc) from exc
 
     @router.post("/tenants/{tenant_id}/brokers", dependencies=[Depends(admin)])
     async def add_broker(tenant_id: str, payload: BrokerCreate) -> dict:
@@ -222,5 +298,62 @@ def register_internal_routes(app, *, get_container, get_settings_fn) -> None:
             "role": broker.role,
             "is_active": broker.is_active,
         }
+
+    @router.post("/whatsapp/test-send", dependencies=[Depends(admin)])
+    async def whatsapp_test_send(payload: WhatsAppTestSend) -> dict:
+        from fivecent.messaging.plugin_whatsapp.outbound import normalize_whatsapp_recipient
+
+        container: Container = get_container()
+        tenant_id = (payload.tenant_id or container.seed_tenant_id).strip()
+        tenant = await tenants().get(tenant_id)
+        if tenant is None:
+            raise HTTPException(status_code=404, detail="Tenant not found.")
+        to = normalize_whatsapp_recipient(payload.phone)
+        if len(to) < 8:
+            raise HTTPException(status_code=422, detail="Phone number is too short.")
+        try:
+            outbound_id = await container.sender.send(
+                tenant_id, "whatsapp", to, payload.message.strip()
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        except Exception as exc:
+            raise HTTPException(
+                status_code=502, detail=f"WhatsApp send failed: {exc}"
+            ) from exc
+        return {
+            "status": "ok",
+            "tenant_id": tenant_id,
+            "to": to,
+            "outbound_id": outbound_id,
+        }
+
+    @router.get("/inbound/failed", dependencies=[Depends(admin)])
+    async def list_failed_inbound() -> list[dict]:
+        return await conversations().list_failed_raw_inbound()
+
+    @router.post("/inbound/{payload_id}/replay", dependencies=[Depends(admin)])
+    async def replay_inbound(payload_id: str, request: Request) -> dict:
+        repo = conversations()
+        row = await repo.get_raw_inbound(payload_id)
+        if row is None:
+            raise HTTPException(status_code=404, detail="Inbound payload not found.")
+        try:
+            body = json.loads(row["body"] or "{}")
+        except json.JSONDecodeError as exc:
+            raise HTTPException(status_code=400, detail="Stored payload is not valid JSON.") from exc
+        if not isinstance(body, dict):
+            raise HTTPException(status_code=400, detail="Stored payload is not a JSON object.")
+        process = getattr(request.app.state, "process_webhook_payload", None)
+        if process is None:
+            raise HTTPException(status_code=503, detail="Webhook replay is unavailable.")
+        raw = (row["body"] or "").encode("utf-8")
+        try:
+            await process(row["channel"], body, raw, payload_id=payload_id)
+        except Exception as exc:
+            await repo.mark_raw_inbound(payload_id, status="failed", error=str(exc)[:2000])
+            raise HTTPException(status_code=500, detail="Replay failed.") from exc
+        await repo.mark_raw_inbound(payload_id, status="replayed", error=None)
+        return {"status": "ok", "payload_id": payload_id}
 
     app.include_router(router)

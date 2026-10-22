@@ -99,6 +99,35 @@ async def _hold_conversation_lock(
             await asyncio.sleep(LOCK_RETRY_INTERVAL)
 
 
+async def _mark_inbound(
+    container: Container,
+    event: InboundMessageEvent,
+    status: str,
+    reason: Optional[str] = None,
+) -> None:
+    try:
+        await container.conversations.mark_inbound(
+            event.tenant_id, event.provider_message_id, status, reason
+        )
+    except Exception:
+        logger.exception(
+            "failed to mark inbound status=%s tenant=%s msg=%s",
+            status,
+            event.tenant_id,
+            event.provider_message_id,
+        )
+
+
+async def _skip(
+    container: Container,
+    event: InboundMessageEvent,
+    conversation_id: str,
+    reason: str,
+) -> TurnResult:
+    await _mark_inbound(container, event, "skipped", reason)
+    return TurnResult(skipped=True, reason=reason, conversation_id=conversation_id)
+
+
 async def handle_turn(event: InboundMessageEvent, container: Container) -> TurnResult:
     role = "broker" if event.is_business_echo else "user"
     conversation_id = await container.conversations.claim_inbound(event, role)
@@ -106,7 +135,7 @@ async def handle_turn(event: InboundMessageEvent, container: Container) -> TurnR
         return TurnResult(skipped=True, reason="duplicate")
 
     if await container.cache.was_sent_by_bot(event.tenant_id, event.provider_message_id):
-        return TurnResult(skipped=True, reason="echo", conversation_id=conversation_id)
+        return await _skip(container, event, conversation_id, "echo")
 
     if event.is_business_echo:
         await container.cache.set_human_active(
@@ -118,10 +147,10 @@ async def handle_turn(event: InboundMessageEvent, container: Container) -> TurnR
             event.user_channel_id,
             event.provider_message_id,
         )
-        return TurnResult(skipped=True, reason="echo", conversation_id=conversation_id)
+        return await _skip(container, event, conversation_id, "echo")
 
     if not event.text or not event.text.strip():
-        return TurnResult(skipped=True, reason="no_text", conversation_id=conversation_id)
+        return await _skip(container, event, conversation_id, "no_text")
 
     user_text = event.text.strip()
     fragments: list[dict] = [
@@ -154,9 +183,10 @@ async def handle_turn(event: InboundMessageEvent, container: Container) -> TurnR
                 debounce_token,
                 current,
             )
-            return TurnResult(skipped=True, reason="debounced", conversation_id=conversation_id)
+            return await _skip(container, event, conversation_id, "debounced")
 
     try:
+        await _mark_inbound(container, event, "processing")
         async for _ in _hold_conversation_lock(
             container.cache,
             event.tenant_id,
@@ -169,9 +199,7 @@ async def handle_turn(event: InboundMessageEvent, container: Container) -> TurnR
                     event.tenant_id, event.channel, event.user_channel_id
                 )
                 if current != debounce_token:
-                    return TurnResult(
-                        skipped=True, reason="debounced", conversation_id=conversation_id
-                    )
+                    return await _skip(container, event, conversation_id, "debounced")
                 drained = await container.cache.drain_debounce_fragments(
                     event.tenant_id, event.channel, event.user_channel_id
                 )
@@ -179,9 +207,7 @@ async def handle_turn(event: InboundMessageEvent, container: Container) -> TurnR
                     fragments = drained
                 user_text = _join_fragments(fragments)
                 if not user_text:
-                    return TurnResult(
-                        skipped=True, reason="empty_buffer", conversation_id=conversation_id
-                    )
+                    return await _skip(container, event, conversation_id, "empty_buffer")
 
             if await container.cache.is_human_active(
                 event.tenant_id, event.channel, event.user_channel_id
@@ -189,7 +215,7 @@ async def handle_turn(event: InboundMessageEvent, container: Container) -> TurnR
                 logger.warning(
                     "HITL mute tenant=%s user=%s", event.tenant_id, event.user_channel_id
                 )
-                return TurnResult(skipped=True, reason="hitl", conversation_id=conversation_id)
+                return await _skip(container, event, conversation_id, "hitl")
 
             tenant = await container.tenants.get(event.tenant_id)
             if tenant is None:
@@ -198,9 +224,7 @@ async def handle_turn(event: InboundMessageEvent, container: Container) -> TurnR
                 logger.info(
                     "bot muted tenant=%s reason=hours_or_inactive", event.tenant_id
                 )
-                return TurnResult(
-                    skipped=True, reason="outside_hours", conversation_id=conversation_id
-                )
+                return await _skip(container, event, conversation_id, "outside_hours")
 
             window = await container.cache.get_window(
                 event.tenant_id, event.channel, event.user_channel_id
@@ -216,9 +240,7 @@ async def handle_turn(event: InboundMessageEvent, container: Container) -> TurnR
                     event.tenant_id,
                     event.user_channel_id,
                 )
-                return TurnResult(
-                    skipped=True, reason="repeat_greeting", conversation_id=conversation_id
-                )
+                return await _skip(container, event, conversation_id, "repeat_greeting")
 
             result = await orchestrate(
                 container=container,
@@ -244,10 +266,8 @@ async def handle_turn(event: InboundMessageEvent, container: Container) -> TurnR
                     draft_reply=result.reply,
                     detail=exc.detail,
                 )
-                return TurnResult(
-                    skipped=True,
-                    reason="session_window_closed",
-                    conversation_id=conversation_id,
+                return await _skip(
+                    container, event, conversation_id, "session_window_closed"
                 )
             await container.cache.remember_outbound(event.tenant_id, outbound_id)
             await container.conversations.append_assistant(
@@ -259,6 +279,7 @@ async def handle_turn(event: InboundMessageEvent, container: Container) -> TurnR
                 tokens_out=result.tokens_out,
                 latency_ms=result.latency_ms,
             )
+            await _mark_inbound(container, event, "completed")
             updated = history + [
                 {"role": "user", "content": user_text},
                 {"role": "assistant", "content": result.reply},
@@ -281,10 +302,12 @@ async def handle_turn(event: InboundMessageEvent, container: Container) -> TurnR
                 result.tokens_out,
             )
             return TurnResult(skipped=False, reply=result.reply, conversation_id=conversation_id)
-        return TurnResult(skipped=True, reason="lock_timeout", conversation_id=conversation_id)
+        return await _skip(container, event, conversation_id, "lock_timeout")
     except LockBusy:
+        await _mark_inbound(container, event, "failed", "lock_busy")
         raise
     except Exception:
+        await _mark_inbound(container, event, "failed", "error")
         logger.exception("turn failed tenant=%s msg=%s", event.tenant_id, event.provider_message_id)
         raise
 

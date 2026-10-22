@@ -15,6 +15,9 @@ from fivecent.domain.tenancy import (
     Broker,
     FeatureFlags,
     TenantContext,
+    validate_feature_flags,
+    validate_rate,
+    validate_routing_mode,
 )
 
 
@@ -123,7 +126,11 @@ class SqlTenantRepo:
         routing_mode: str = "broadcast",
         feature_flags: Optional[dict] = None,
     ) -> TenantContext:
-        flags = {**DEFAULT_FEATURE_FLAGS, **(feature_flags or {})}
+        vat_rate = validate_rate("vat_rate", vat_rate)
+        apa_rate = validate_rate("apa_rate", apa_rate)
+        max_discount_pct = validate_rate("max_discount_pct", max_discount_pct)
+        routing_mode = validate_routing_mode(routing_mode)
+        flags = validate_feature_flags(feature_flags)
         async with self._sessions() as session:
             session.add(
                 Tenant(
@@ -185,9 +192,13 @@ class SqlTenantRepo:
                     continue
                 if value is None:
                     continue
-                if key == "feature_flags":
+                if key in {"vat_rate", "apa_rate", "max_discount_pct"}:
+                    value = validate_rate(key, Decimal(str(value)))
+                elif key == "routing_mode":
+                    value = validate_routing_mode(str(value))
+                elif key == "feature_flags":
                     current = row.feature_flags if isinstance(row.feature_flags, dict) else {}
-                    value = {**DEFAULT_FEATURE_FLAGS, **current, **value}
+                    value = validate_feature_flags({**current, **value})
                 setattr(row, column, value)
             await session.commit()
         self.invalidate_routing()

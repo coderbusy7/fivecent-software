@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Awaitable, Callable
+from typing import Optional
 from uuid import uuid4
 
 import httpx
@@ -9,6 +11,16 @@ from fivecent.messaging.errors import SessionWindowClosedError, graph_error_code
 from fivecent.messaging.outbound import OutboundChannel
 
 logger = logging.getLogger(__name__)
+
+PhoneResolver = Callable[[str], Awaitable[Optional[str]]]
+
+
+def normalize_whatsapp_recipient(phone: str) -> str:
+    """Normalize operator input to WhatsApp Cloud API digits (no + / 00 prefix)."""
+    digits = "".join(ch for ch in (phone or "") if ch.isdigit())
+    if digits.startswith("00"):
+        digits = digits[2:]
+    return digits
 
 
 class WhatsAppSender(OutboundChannel):
@@ -19,10 +31,12 @@ class WhatsAppSender(OutboundChannel):
         phone_number_id: str,
         graph_version: str,
         client: httpx.AsyncClient | None = None,
+        resolve_phone_number_id: PhoneResolver | None = None,
     ) -> None:
         self._token = access_token
         self._phone_number_id = phone_number_id
         self._graph_version = graph_version
+        self._resolve_phone_number_id = resolve_phone_number_id
         self._client = client or httpx.AsyncClient(timeout=20.0)
         self._owns_client = client is None
 
@@ -30,12 +44,24 @@ class WhatsAppSender(OutboundChannel):
         if self._owns_client:
             await self._client.aclose()
 
+    async def _phone_for_tenant(self, tenant_id: str) -> str:
+        if self._resolve_phone_number_id is not None:
+            resolved = await self._resolve_phone_number_id(tenant_id)
+            if resolved:
+                return resolved
+        return self._phone_number_id
+
     async def send(self, tenant_id: str, user_channel_id: str, text: str) -> str:
-        if not self._token or not self._phone_number_id:
+        if not self._token:
             raise RuntimeError("WhatsApp outbound is not configured.")
+        phone_number_id = await self._phone_for_tenant(tenant_id)
+        if not phone_number_id:
+            raise RuntimeError(
+                f"WhatsApp phone_number_id is not configured for tenant {tenant_id}."
+            )
         url = (
             f"https://graph.facebook.com/{self._graph_version}/"
-            f"{self._phone_number_id}/messages"
+            f"{phone_number_id}/messages"
         )
         response = await self._client.post(
             url,

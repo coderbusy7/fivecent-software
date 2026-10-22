@@ -72,7 +72,7 @@ async def build_container(
 
     providers = build_llm_plugins(settings, closers, llm=llm)
     if sender is None:
-        sender = build_outbound_plugins(settings, closers)
+        sender = build_outbound_plugins(settings, closers, sessions=sessions)
 
     ops_alerts = build_broker_alerts(settings, closers)
     container = AppContainer(

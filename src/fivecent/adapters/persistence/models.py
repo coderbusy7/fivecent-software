@@ -67,6 +67,9 @@ class Message(Base):
     role: Mapped[str] = mapped_column(String(16))
     text: Mapped[Optional[str]] = mapped_column(Text)
     provider_message_id: Mapped[str] = mapped_column(String(256))
+    # received | processing | completed | failed | skipped
+    processing_status: Mapped[str] = mapped_column(String(32), default="completed")
+    skip_reason: Mapped[Optional[str]] = mapped_column(String(64), default=None)
     tokens_in: Mapped[int] = mapped_column(Integer, default=0)
     tokens_out: Mapped[int] = mapped_column(Integer, default=0)
     latency_ms: Mapped[int] = mapped_column(Integer, default=0)
@@ -80,4 +83,7 @@ class InboundPayload(Base):
     tenant_id: Mapped[Optional[str]] = mapped_column(String(64), index=True)
     channel: Mapped[str] = mapped_column(String(32))
     body: Mapped[str] = mapped_column(Text)
+    # accepted | failed | replayed
+    status: Mapped[str] = mapped_column(String(32), default="accepted")
+    error: Mapped[Optional[str]] = mapped_column(Text, default=None)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))

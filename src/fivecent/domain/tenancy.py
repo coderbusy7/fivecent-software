@@ -8,6 +8,7 @@ from zoneinfo import ZoneInfo
 
 PARIS = ZoneInfo("Europe/Paris")
 RoutingMode = Literal["broadcast", "round_robin"]
+ROUTING_MODES = frozenset({"broadcast", "round_robin"})
 
 DEFAULT_FEATURE_FLAGS = {
     "enable_instant_quote": True,
@@ -21,9 +22,35 @@ DEFAULT_FEATURE_FLAGS = {
 }
 
 
+class TenantConfigError(ValueError):
+    """Invalid tenant commercial or hours configuration."""
+
+
 def _parse_hhmm(value: str) -> time:
-    hours, minutes = value.split(":")
-    return time(int(hours), int(minutes))
+    raw = (value or "").strip()
+    parts = raw.split(":")
+    if len(parts) != 2 or not parts[0].isdigit() or not parts[1].isdigit():
+        raise TenantConfigError(f"Invalid HH:MM time value: {value!r}")
+    hours, minutes = int(parts[0]), int(parts[1])
+    if hours > 23 or minutes > 59:
+        raise TenantConfigError(f"Invalid HH:MM time value: {value!r}")
+    return time(hours, minutes)
+
+
+def validate_rate(name: str, value: Decimal) -> Decimal:
+    amount = Decimal(value)
+    if amount < 0 or amount > 1:
+        raise TenantConfigError(f"{name} must be between 0 and 1 inclusive.")
+    return amount
+
+
+def validate_routing_mode(value: str) -> RoutingMode:
+    mode = (value or "").strip()
+    if mode not in ROUTING_MODES:
+        raise TenantConfigError(
+            f"routing_mode must be one of: {', '.join(sorted(ROUTING_MODES))}."
+        )
+    return mode  # type: ignore[return-value]
 
 
 def is_after_hours(
@@ -55,6 +82,15 @@ class FeatureFlags:
     @classmethod
     def from_mapping(cls, raw: Optional[dict]) -> FeatureFlags:
         data = {**DEFAULT_FEATURE_FLAGS, **(raw or {})}
+        start = str(data.get("after_hours_start", "19:00"))
+        end = str(data.get("after_hours_end", "08:00"))
+        # Validate shape when loading so corrupt DB values surface clearly.
+        try:
+            _parse_hhmm(start)
+            _parse_hhmm(end)
+        except TenantConfigError:
+            start = str(DEFAULT_FEATURE_FLAGS["after_hours_start"])
+            end = str(DEFAULT_FEATURE_FLAGS["after_hours_end"])
         return cls(
             enable_instant_quote=bool(data.get("enable_instant_quote", True)),
             enable_soft_hold=bool(data.get("enable_soft_hold", True)),
@@ -62,8 +98,8 @@ class FeatureFlags:
             enable_tandem_charter_upsell=bool(data.get("enable_tandem_charter_upsell", True)),
             enable_perk_negotiation=bool(data.get("enable_perk_negotiation", True)),
             require_email_for_quote=bool(data.get("require_email_for_quote", False)),
-            after_hours_start=str(data.get("after_hours_start", "19:00")),
-            after_hours_end=str(data.get("after_hours_end", "08:00")),
+            after_hours_start=start,
+            after_hours_end=end,
         )
 
     def as_dict(self) -> dict:
@@ -77,6 +113,17 @@ class FeatureFlags:
             "after_hours_start": self.after_hours_start,
             "after_hours_end": self.after_hours_end,
         }
+
+
+def validate_feature_flags(raw: Optional[dict]) -> dict:
+    """Strict validation for admin writes — rejects bad hours instead of falling back."""
+    data = {**DEFAULT_FEATURE_FLAGS, **(raw or {})}
+    start = str(data.get("after_hours_start", "19:00"))
+    end = str(data.get("after_hours_end", "08:00"))
+    _parse_hhmm(start)
+    _parse_hhmm(end)
+    flags = FeatureFlags.from_mapping({**data, "after_hours_start": start, "after_hours_end": end})
+    return flags.as_dict()
 
 
 @dataclass(frozen=True)
@@ -134,11 +181,14 @@ class TenantContext:
             return False
         if not self.feature_flags.enable_after_hours_only:
             return True
-        return is_after_hours(
-            now,
-            self.feature_flags.after_hours_start,
-            self.feature_flags.after_hours_end,
-        )
+        try:
+            return is_after_hours(
+                now,
+                self.feature_flags.after_hours_start,
+                self.feature_flags.after_hours_end,
+            )
+        except TenantConfigError:
+            return False
 
 
 def pick_alert_brokers(tenant: TenantContext, round_robin_index: int = 0) -> tuple[Broker, ...]:

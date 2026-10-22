@@ -123,44 +123,59 @@ def create_app(
             return {"reply": "", "status": result.reason or "skipped"}
         return {"reply": result.reply or ""}
 
+    async def _routing_for_channel(channel: str) -> dict[str, str]:
+        routing = dict(await app.state.container.tenants.channel_routing_map(channel))
+        # Startup seed map fills gaps only — DB mappings win for multi-agency.
+        for phone_id, tenant_id in (getattr(app.state, "phone_map", {}) or {}).items():
+            routing.setdefault(phone_id, tenant_id)
+        return routing
+
     async def process_webhook_payload(
-        channel: str, payload: dict, raw: bytes
-    ) -> None:
-        tenant_id: Optional[str] = None
+        channel: str, payload: dict, raw: bytes, *, payload_id: Optional[str] = None
+    ) -> str:
+        """Persist then enqueue. Raises on failure so callers can return non-200."""
+        current: Container = app.state.container
+        routing = await _routing_for_channel(channel)
+        events = app.state.webhook_adapters.get(channel).parse(
+            payload, tenant_for_account_id=routing.get
+        )
+        tenant_id = events[0].tenant_id if events else None
+        phone_number_id = (
+            ((payload.get("entry") or [{}])[0].get("changes") or [{}])[0]
+            .get("value", {})
+            .get("metadata", {})
+            .get("phone_number_id")
+        )
+        logger.warning(
+            "webhook accepted channel=%s events=%s tenant=%s phone_number_id=%s",
+            channel,
+            len(events),
+            tenant_id,
+            phone_number_id,
+        )
+        if payload_id is None:
+            payload_id = await current.conversations.record_raw_inbound(
+                tenant_id=tenant_id,
+                channel=channel,
+                body=raw.decode("utf-8", errors="replace"),
+            )
         try:
-            routing = await app.state.container.tenants.channel_routing_map(channel)
-            if channel == "whatsapp":
-                routing.update(app.state.phone_map)
-            events = app.state.webhook_adapters.get(channel).parse(
-                payload, tenant_for_account_id=routing.get
-            )
-            tenant_id = events[0].tenant_id if events else None
-            phone_number_id = (
-                ((payload.get("entry") or [{}])[0].get("changes") or [{}])[0]
-                .get("value", {})
-                .get("metadata", {})
-                .get("phone_number_id")
-            )
-            logger.warning(
-                "webhook accepted channel=%s events=%s tenant=%s phone_number_id=%s",
-                channel,
-                len(events),
-                tenant_id,
-                phone_number_id,
-            )
-            current: Container = app.state.container
-            try:
-                await current.conversations.record_raw_inbound(
-                    tenant_id=tenant_id,
-                    channel=channel,
-                    body=raw.decode("utf-8", errors="replace"),
-                )
-            except Exception:
-                logger.exception("failed to store inbound webhook channel=%s", channel)
             for event in events:
                 await current.queue.enqueue(event)
-        except Exception:
-            logger.exception("webhook processing failed channel=%s tenant=%s", channel, tenant_id)
+        except Exception as exc:
+            await current.conversations.mark_raw_inbound(
+                payload_id, status="failed", error=str(exc)[:2000]
+            )
+            logger.exception(
+                "webhook enqueue failed channel=%s tenant=%s payload=%s",
+                channel,
+                tenant_id,
+                payload_id,
+            )
+            raise
+        return payload_id
+
+    app.state.process_webhook_payload = process_webhook_payload  # type: ignore[attr-defined]
 
     async def receive_webhook(channel: str, request: Request) -> dict[str, str]:
         try:
@@ -186,9 +201,16 @@ def create_app(
             raise HTTPException(status_code=400, detail="Invalid JSON.") from exc
         if not isinstance(payload, dict):
             raise HTTPException(status_code=400, detail="Invalid JSON.")
-        # Inline so Render free instances cannot drop the Graph reply after 200.
-        await process_webhook_payload(channel, payload, raw)
-        return {"status": "ok"}
+        # Success only after durable store + enqueue. Meta retries on 5xx.
+        try:
+            payload_id = await process_webhook_payload(channel, payload, raw)
+        except HTTPException:
+            raise
+        except Exception as exc:
+            raise HTTPException(
+                status_code=500, detail="Webhook accepted but processing failed."
+            ) from exc
+        return {"status": "ok", "payload_id": payload_id}
 
     @app.post("/webhook")
     async def whatsapp_webhook(request: Request) -> dict[str, str]:
