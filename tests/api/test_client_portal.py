@@ -181,6 +181,33 @@ async def test_client_cannot_access_other_tenant_analytics(
 
 
 @pytest.mark.asyncio
+async def test_provision_client_skips_invite_token(admin_client) -> None:
+    client, headers = admin_client
+    provisioned = client.post(
+        "/internal/portal/provision",
+        headers=headers,
+        json={
+            "email": "ready@agency.test",
+            "display_name": "Ready",
+            "tenant_id": "port-vauban",
+            "password": "ready-client-pass",
+        },
+    )
+    assert provisioned.status_code == 200, provisioned.text
+    login = client.post(
+        "/internal/portal/login",
+        json={"email": "ready@agency.test", "password": "ready-client-pass"},
+    )
+    assert login.status_code == 200
+    assert login.json()["role"] == "client_user"
+    overview = client.get(
+        "/internal/portal/overview",
+        headers={"Authorization": f"Bearer {login.json()['api_token']}"},
+    )
+    assert overview.status_code == 200
+
+
+@pytest.mark.asyncio
 async def test_analytics_date_filter_and_empty_range(admin_client) -> None:
     client, headers = admin_client
     invited = client.post(

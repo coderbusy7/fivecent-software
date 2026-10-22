@@ -788,35 +788,39 @@ with users_tab:
                     elif revoked:
                         _error(revoked)
 
-        st.markdown("**Invite client portal user**")
+        st.markdown("**Create client portal login (testing)**")
         st.caption(
-            "Creates a read-only client for this agency. Send them the invite token; "
-            "they set a password on the Client portal page."
+            "Sets email + password immediately — no invite token. "
+            "Client signs in on the Client portal page."
         )
-        with st.form("invite_client"):
-            client_email = st.text_input("Client email")
-            client_name = st.text_input("Display name")
-            invite_client = st.form_submit_button("Invite client")
-        if invite_client:
-            if not client_email.strip() or not client_name.strip():
-                st.error("Email and display name are required.")
+        with st.form("provision_client"):
+            client_email = st.text_input("Client email", value="portal.test@fivecent.local")
+            client_name = st.text_input("Display name", value="Portal Tester")
+            client_password = st.text_input(
+                "Password (12+ chars)", value="portal-test-pass", type="password"
+            )
+            provision_client = st.form_submit_button("Create / reset client login")
+        if provision_client:
+            if not client_email.strip() or not client_name.strip() or not client_password:
+                st.error("Email, display name and password are required.")
             else:
                 resp = api_request(
                     "POST",
-                    "/internal/portal/invite",
+                    "/internal/portal/provision",
                     json={
                         "email": client_email.strip(),
                         "display_name": client_name.strip(),
                         "tenant_id": selected,
+                        "password": client_password,
                     },
                 )
                 if resp is None:
                     st.stop()
                 if resp.is_success:
-                    body = resp.json()
-                    st.success("Invite created — copy the token now; it is shown once.")
-                    st.code(body.get("invite_token") or "", language=None)
-                    st.caption(f"Expires {body.get('invite_expires_at')}")
+                    st.session_state["flash_success"] = (
+                        f"Client ready — sign in on Client portal as {client_email.strip()}"
+                    )
+                    st.rerun()
                 else:
                     _error(resp)
 

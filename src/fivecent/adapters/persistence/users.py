@@ -149,6 +149,52 @@ class SqlUserRepo:
             serialized = _serialize(row)
         return {**serialized, "api_token": api_token, "has_password": True, "invite_pending": False}
 
+    async def provision_client_with_password(
+        self,
+        *,
+        email: str,
+        display_name: str,
+        tenant_id: str,
+        password: str,
+    ) -> dict:
+        """Create or reset a client portal user with a password already set (testing / ops)."""
+        api_token = mint_api_token()
+        async with self._sessions() as session:
+            row = await session.scalar(
+                select(AdminUser).where(AdminUser.email == email.strip().lower())
+            )
+            if row is None:
+                row = AdminUser(
+                    id=str(uuid4()),
+                    email=email.strip().lower(),
+                    display_name=display_name.strip(),
+                    role="client_user",
+                    tenant_id=tenant_id,
+                    password_hash=hash_password(password),
+                    api_token_hash=hash_api_token(api_token),
+                    invite_token_hash=None,
+                    invite_expires_at=None,
+                    is_active=True,
+                    created_at=datetime.now(timezone.utc),
+                    disabled_at=None,
+                )
+                session.add(row)
+            else:
+                if row.role != "client_user":
+                    raise ValueError("Email is already registered as a non-client account.")
+                row.display_name = display_name.strip()
+                row.role = "client_user"
+                row.tenant_id = tenant_id
+                row.password_hash = hash_password(password)
+                row.api_token_hash = hash_api_token(api_token)
+                row.invite_token_hash = None
+                row.invite_expires_at = None
+                row.is_active = True
+                row.disabled_at = None
+            await session.commit()
+            serialized = _serialize(row)
+        return {**serialized, "api_token": api_token, "has_password": True, "invite_pending": False}
+
     async def authenticate_password(self, email: str, password: str) -> dict:
         async with self._sessions() as session:
             row = await session.scalar(

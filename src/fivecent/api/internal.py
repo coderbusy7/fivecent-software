@@ -159,6 +159,13 @@ class PortalLogin(BaseModel):
     password: str = Field(min_length=12, max_length=128)
 
 
+class PortalProvision(BaseModel):
+    email: str = Field(min_length=3, max_length=255)
+    display_name: str = Field(min_length=1, max_length=255)
+    tenant_id: str = Field(min_length=1, max_length=64)
+    password: str = Field(min_length=12, max_length=128)
+
+
 class ConversationOpsPatch(BaseModel):
     assigned_broker_id: Optional[str] = None
     handoff_status: Optional[str] = Field(
@@ -1178,6 +1185,41 @@ def register_internal_routes(app, *, get_container, get_settings_fn) -> None:
             "role": result["role"],
             "tenant_id": result["tenant_id"],
             "api_token": result["api_token"],
+        }
+
+    @router.post("/portal/provision")
+    async def portal_provision(
+        payload: PortalProvision, current: Actor = Depends(actor)
+    ) -> dict:
+        """Company staff: create a client with password already set (no invite token)."""
+        _require_role(current, "agency_admin")
+        _require_tenant(current, payload.tenant_id)
+        if await tenants().get(payload.tenant_id) is None:
+            raise HTTPException(status_code=404, detail="Tenant not found.")
+        try:
+            created = await users().provision_client_with_password(
+                email=payload.email,
+                display_name=payload.display_name,
+                tenant_id=payload.tenant_id,
+                password=payload.password,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        await audit_write(
+            current,
+            tenant_id=payload.tenant_id,
+            action="provision",
+            resource_type="client_user",
+            resource_id=created["user_id"],
+            after={"email": created["email"], "role": "client_user"},
+        )
+        return {
+            "user_id": created["user_id"],
+            "email": created["email"],
+            "display_name": created["display_name"],
+            "role": created["role"],
+            "tenant_id": created["tenant_id"],
+            "has_password": True,
         }
 
     @router.get("/portal/overview")
