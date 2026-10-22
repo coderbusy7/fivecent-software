@@ -2,7 +2,7 @@ from datetime import date, datetime
 from decimal import Decimal
 from typing import Optional
 
-from sqlalchemy import Boolean, Date, DateTime, ForeignKey, Integer, Numeric, String
+from sqlalchemy import Boolean, Date, DateTime, ForeignKey, Integer, Numeric, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from fivecent.adapters.persistence.models import Base
@@ -71,3 +71,24 @@ class Hold(Base):
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     lead_id: Mapped[str] = mapped_column(ForeignKey("leads.id"))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    conversation_id: Mapped[Optional[str]] = mapped_column(
+        ForeignKey("conversations.id"), nullable=True, index=True
+    )
+
+
+class BrokerAlertOutbox(Base):
+    __tablename__ = "broker_alert_outbox"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id"), index=True)
+    kind: Mapped[str] = mapped_column(String(32))
+    idempotency_key: Mapped[str] = mapped_column(String(255), unique=True)
+    payload_json: Mapped[str] = mapped_column(Text)
+    status: Mapped[str] = mapped_column(String(32), default="pending", index=True)
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    last_error: Mapped[Optional[str]] = mapped_column(String(2000), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    completed_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )

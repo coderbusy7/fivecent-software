@@ -12,7 +12,17 @@ def _app(container, settings, *, token: str = "tg-secret"):
     settings.telegram_bot_token = token
     settings.telegram_bot_username = "fivecent_test_bot"
     settings.telegram_webhook_secret = "hook-secret"
+    settings.admin_api_token = "admin-secret"
     return create_app(container=container, settings=settings, phone_map={})
+
+
+async def _mint_invite(client: TestClient) -> str:
+    response = client.post(
+        "/internal/tenants/port-vauban/telegram-invite",
+        headers={"Authorization": "Bearer admin-secret"},
+    )
+    assert response.status_code == 200, response.text
+    return response.json()["token"]
 
 
 @pytest.mark.asyncio
@@ -26,12 +36,13 @@ async def test_start_links_tenant_desk_chat_id(container, settings) -> None:
         ) as reply,
         TestClient(app) as client,
     ):
+        token = await _mint_invite(client)
         response = client.post(
             "/telegram/webhook",
             headers={"X-Telegram-Bot-Api-Secret-Token": "hook-secret"},
             json={
                 "message": {
-                    "text": "/start port-vauban",
+                    "text": f"/start {token}",
                     "chat": {"id": 84729103},
                 }
             },
@@ -48,7 +59,7 @@ async def test_start_links_tenant_desk_chat_id(container, settings) -> None:
 
 
 @pytest.mark.asyncio
-async def test_start_rejects_unknown_tenant(container, settings) -> None:
+async def test_start_rejects_bare_tenant_id_and_reuse(container, settings) -> None:
     app = _app(container, settings)
     with (
         patch(
@@ -58,22 +69,39 @@ async def test_start_rejects_unknown_tenant(container, settings) -> None:
         ) as reply,
         TestClient(app) as client,
     ):
-        response = client.post(
+        bare = client.post(
             "/telegram/webhook",
             headers={"X-Telegram-Bot-Api-Secret-Token": "hook-secret"},
             json={
                 "message": {
-                    "text": "/start does-not-exist",
+                    "text": "/start port-vauban",
                     "chat": {"id": 1},
                 }
             },
         )
-        assert response.status_code == 200
-        assert "Unknown" in reply.await_args.kwargs["text"]
+        assert bare.status_code == 200
+        assert "Invalid" in reply.await_args.kwargs["text"]
+
+        token = await _mint_invite(client)
+        first = client.post(
+            "/telegram/webhook",
+            headers={"X-Telegram-Bot-Api-Secret-Token": "hook-secret"},
+            json={"message": {"text": f"/start {token}", "chat": {"id": 2}}},
+        )
+        assert first.status_code == 200
+        assert "Connected" in reply.await_args.kwargs["text"]
+
+        reused = client.post(
+            "/telegram/webhook",
+            headers={"X-Telegram-Bot-Api-Secret-Token": "hook-secret"},
+            json={"message": {"text": f"/start {token}", "chat": {"id": 3}}},
+        )
+        assert reused.status_code == 200
+        assert "Invalid" in reply.await_args.kwargs["text"] or "already-used" in reply.await_args.kwargs["text"]
 
 
 @pytest.mark.asyncio
-async def test_mute_sets_human_active_circuit_breaker(container, settings) -> None:
+async def test_mute_requires_desk_or_broker_membership(container, settings) -> None:
     app = _app(container, settings)
     with (
         patch(
@@ -83,7 +111,7 @@ async def test_mute_sets_human_active_circuit_breaker(container, settings) -> No
         ) as reply,
         TestClient(app) as client,
     ):
-        response = client.post(
+        denied = client.post(
             "/telegram/webhook",
             headers={"X-Telegram-Bot-Api-Secret-Token": "hook-secret"},
             json={
@@ -93,7 +121,26 @@ async def test_mute_sets_human_active_circuit_breaker(container, settings) -> No
                 }
             },
         )
-        assert response.status_code == 200
+        assert denied.status_code == 200
+        assert "Not authorized" in reply.await_args.kwargs["text"]
+
+        token = await _mint_invite(client)
+        client.post(
+            "/telegram/webhook",
+            headers={"X-Telegram-Bot-Api-Secret-Token": "hook-secret"},
+            json={"message": {"text": f"/start {token}", "chat": {"id": 99}}},
+        )
+        muted = client.post(
+            "/telegram/webhook",
+            headers={"X-Telegram-Bot-Api-Secret-Token": "hook-secret"},
+            json={
+                "message": {
+                    "text": "/mute_19175550192_port-vauban",
+                    "chat": {"id": 99},
+                }
+            },
+        )
+        assert muted.status_code == 200
         assert "muted" in reply.await_args.kwargs["text"].lower()
 
     active = await container.cache.is_human_active(
@@ -112,6 +159,19 @@ def test_webhook_secret_required(container, settings) -> None:
         assert denied.status_code == 403
 
 
+def test_production_requires_webhook_secret_configured(container, settings) -> None:
+    settings.app_env = "production"
+    settings.telegram_bot_token = "tg-secret"
+    settings.telegram_webhook_secret = ""
+    app = create_app(container=container, settings=settings, phone_map={})
+    with TestClient(app) as client:
+        response = client.post(
+            "/telegram/webhook",
+            json={"message": {"text": "/start x", "chat": {"id": 1}}},
+        )
+        assert response.status_code == 503
+
+
 def test_patch_tenant_and_broker_telegram(container, settings) -> None:
     settings.admin_api_token = "admin-secret"
     settings.telegram_bot_username = "fivecent_test_bot"
@@ -126,9 +186,16 @@ def test_patch_tenant_and_broker_telegram(container, settings) -> None:
         assert patched.status_code == 200, patched.text
         body = patched.json()
         assert body["telegram_chat_id"] == "11223344"
-        assert body["telegram_invite_link"] == (
-            "https://t.me/fivecent_test_bot?start=port-vauban"
+
+        minted = client.post(
+            "/internal/tenants/port-vauban/telegram-invite",
+            headers=headers,
         )
+        assert minted.status_code == 200
+        assert minted.json()["invite_link"].startswith(
+            "https://t.me/fivecent_test_bot?start="
+        )
+        assert "port-vauban" not in minted.json()["invite_link"]
 
         broker = client.post(
             "/internal/tenants/port-vauban/brokers",

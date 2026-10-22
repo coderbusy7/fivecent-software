@@ -123,7 +123,12 @@ def _require_admin(settings: Settings, authorization: str) -> None:
         raise HTTPException(status_code=401, detail="Unauthorized.")
 
 
-def _serialize_tenant(ctx, *, telegram_bot_username: str = "fivecent_test_bot") -> dict:
+def _serialize_tenant(
+    ctx,
+    *,
+    telegram_bot_username: str = "fivecent_test_bot",
+    telegram_invite_link: Optional[str] = None,
+) -> dict:
     return {
         "tenant_id": ctx.id,
         "agency_name": ctx.agency_name,
@@ -140,9 +145,7 @@ def _serialize_tenant(ctx, *, telegram_bot_username: str = "fivecent_test_bot") 
         "routing_mode": ctx.routing_mode,
         "feature_flags": ctx.feature_flags.as_dict(),
         "telegram_chat_id": ctx.telegram_chat_id,
-        "telegram_invite_link": (
-            f"https://t.me/{telegram_bot_username}?start={ctx.id}"
-        ),
+        "telegram_invite_link": telegram_invite_link,
         "is_active": ctx.is_active,
         "brokers": [
             {
@@ -183,8 +186,15 @@ def register_internal_routes(app, *, get_container, get_settings_fn) -> None:
     def bot_username() -> str:
         return get_settings_fn().telegram_bot_username or "fivecent_test_bot"
 
-    def serialize(ctx) -> dict:
-        return _serialize_tenant(ctx, telegram_bot_username=bot_username())
+    async def serialize(ctx) -> dict:
+        invite = await tenants().latest_open_telegram_invite(
+            ctx.id, bot_username=bot_username()
+        )
+        return _serialize_tenant(
+            ctx,
+            telegram_bot_username=bot_username(),
+            telegram_invite_link=(invite or {}).get("invite_link"),
+        )
 
     def validate_plugins(service_type: str, llm_provider: str) -> None:
         container: Container = get_container()
@@ -198,7 +208,7 @@ def register_internal_routes(app, *, get_container, get_settings_fn) -> None:
 
     @router.get("/tenants", dependencies=[Depends(admin)])
     async def list_tenants() -> list[dict]:
-        return [serialize(ctx) for ctx in await tenants().list_all()]
+        return [await serialize(ctx) for ctx in await tenants().list_all()]
 
     @router.post("/tenants", dependencies=[Depends(admin)])
     async def create_tenant(payload: TenantCreate) -> dict:
@@ -223,7 +233,7 @@ def register_internal_routes(app, *, get_container, get_settings_fn) -> None:
                 routing_mode=payload.routing_mode,
                 feature_flags=payload.feature_flags,
             )
-            return serialize(ctx)
+            return await serialize(ctx)
         except TenantConfigError as exc:
             raise config_http(exc) from exc
 
@@ -232,7 +242,7 @@ def register_internal_routes(app, *, get_container, get_settings_fn) -> None:
         ctx = await tenants().get(tenant_id)
         if ctx is None:
             raise HTTPException(status_code=404, detail="Tenant not found.")
-        return serialize(ctx)
+        return await serialize(ctx)
 
     @router.patch("/tenants/{tenant_id}", dependencies=[Depends(admin)])
     async def patch_tenant(tenant_id: str, payload: TenantPatch) -> dict:
@@ -249,9 +259,18 @@ def register_internal_routes(app, *, get_container, get_settings_fn) -> None:
             )
             if ctx is None:
                 raise HTTPException(status_code=404, detail="Tenant not found.")
-            return serialize(ctx)
+            return await serialize(ctx)
         except TenantConfigError as exc:
             raise config_http(exc) from exc
+
+    @router.post("/tenants/{tenant_id}/telegram-invite", dependencies=[Depends(admin)])
+    async def create_telegram_invite(tenant_id: str) -> dict:
+        invite = await tenants().create_telegram_desk_invite(
+            tenant_id, bot_username=bot_username()
+        )
+        if invite is None:
+            raise HTTPException(status_code=404, detail="Tenant not found.")
+        return invite
 
     @router.post("/tenants/{tenant_id}/brokers", dependencies=[Depends(admin)])
     async def add_broker(tenant_id: str, payload: BrokerCreate) -> dict:
@@ -355,5 +374,22 @@ def register_internal_routes(app, *, get_container, get_settings_fn) -> None:
             raise HTTPException(status_code=500, detail="Replay failed.") from exc
         await repo.mark_raw_inbound(payload_id, status="replayed", error=None)
         return {"status": "ok", "payload_id": payload_id}
+
+    @router.get("/alerts/pending", dependencies=[Depends(admin)])
+    async def list_pending_alerts() -> list[dict]:
+        yachting = container.services.get("yachting")
+        outbox = getattr(yachting, "_alert_outbox", None)
+        if outbox is None:
+            return []
+        return list(await outbox.list_pending())
+
+    @router.post("/alerts/flush", dependencies=[Depends(admin)])
+    async def flush_pending_alerts() -> dict:
+        yachting = container.services.get("yachting")
+        flush = getattr(yachting, "flush_broker_alerts", None)
+        if flush is None:
+            raise HTTPException(status_code=503, detail="Alert outbox is unavailable.")
+        result = await flush()
+        return {"status": "ok", **result}
 
     app.include_router(router)

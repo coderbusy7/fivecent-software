@@ -47,6 +47,18 @@ class Broker(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
 
 
+class TelegramDeskInvite(Base):
+    """Single-use, expiring deep-link token for desk Telegram onboarding."""
+
+    __tablename__ = "telegram_desk_invites"
+
+    token: Mapped[str] = mapped_column(String(64), primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id"), index=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    used_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
 class Conversation(Base):
     __tablename__ = "conversations"
     __table_args__ = (UniqueConstraint("tenant_id", "channel", "user_channel_id"),)

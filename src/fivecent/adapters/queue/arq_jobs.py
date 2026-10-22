@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import timedelta
 
+from arq import cron
 from arq.connections import ArqRedis, RedisSettings
 from arq.jobs import Retry
 
@@ -27,10 +28,21 @@ async def process_inbound(ctx: dict, payload: dict) -> None:
         raise Retry(defer=timedelta(seconds=2)) from exc
 
 
+async def flush_broker_alerts(ctx: dict) -> dict:
+    container = ctx["container"]
+    yachting = container.services.get("yachting")
+    flush = getattr(yachting, "flush_broker_alerts", None)
+    if flush is None:
+        return {"attempted": 0, "delivered": 0, "failed": 0}
+    return await flush()
+
+
 async def startup(ctx: dict) -> None:
     from fivecent.composition import build_container
+    from fivecent.production import validate_production_settings
 
     settings: Settings = ctx.get("settings") or get_settings()
+    validate_production_settings(settings)
     ctx["container"] = await build_container(settings, for_worker=True)
 
 
@@ -49,7 +61,8 @@ def worker_settings_from(settings: Settings) -> type:
     redis_settings = _redis_settings(settings.redis_url)
 
     class WorkerSettings:
-        functions = [process_inbound]
+        functions = [process_inbound, flush_broker_alerts]
+        cron_jobs = [cron(flush_broker_alerts, minute={0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55})]
         on_startup = startup
         on_shutdown = shutdown
         redis_settings = redis_settings
@@ -60,7 +73,8 @@ def worker_settings_from(settings: Settings) -> type:
 class WorkerSettings:
     """`arq fivecent.adapters.queue.arq_jobs.WorkerSettings`"""
 
-    functions = [process_inbound]
+    functions = [process_inbound, flush_broker_alerts]
+    cron_jobs = [cron(flush_broker_alerts, minute={0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55})]
     on_startup = startup
     on_shutdown = shutdown
     redis_settings = RedisSettings.from_dsn(

@@ -8,6 +8,7 @@ from fivecent.adapters.alerts.factory import build_broker_alerts
 from fivecent.application.ports import CachePort
 from fivecent.config import Settings
 from fivecent.services.plugin_yachting.persistence import (
+    SqlAlertOutboxRepo,
     SqlFleetRepo,
     SqlHoldRepo,
     SqlLeadRepo,
@@ -34,4 +35,5 @@ def build_yachting_plugin(
         leads=SqlLeadRepo(sessions),
         cache=cache,
         alerts=alerts,
+        alert_outbox=SqlAlertOutboxRepo(sessions),
     )

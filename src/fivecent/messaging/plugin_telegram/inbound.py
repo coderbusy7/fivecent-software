@@ -9,12 +9,25 @@ from fastapi import APIRouter, Header, HTTPException, Request
 from fivecent.adapters.persistence.tenants import SqlTenantRepo
 from fivecent.application.ports import Container
 from fivecent.config import Settings
+from fivecent.domain.tenancy import TenantContext
 from fivecent.messaging.plugin_telegram.outbound import send_telegram_text
 
 logger = logging.getLogger(__name__)
 
 _MUTE = re.compile(r"^/mute[_+](?P<phone>\d+)[_+](?P<tenant>[A-Za-z0-9_-]+)\s*$")
-_START = re.compile(r"^/start(?:@\w+)?(?:\s+(?P<tenant>[A-Za-z0-9_-]+))?\s*$")
+_START = re.compile(r"^/start(?:@\w+)?(?:\s+(?P<payload>[A-Za-z0-9_-]+))?\s*$")
+
+
+def _authorized_operator_chat_ids(ctx: TenantContext) -> set[str]:
+    ids: set[str] = set()
+    desk = (ctx.telegram_chat_id or "").strip()
+    if desk:
+        ids.add(desk)
+    for broker in ctx.active_brokers:
+        chat = (broker.telegram_chat_id or "").strip()
+        if chat:
+            ids.add(chat)
+    return ids
 
 
 def register_telegram_routes(
@@ -34,6 +47,11 @@ def register_telegram_routes(
         if not settings.telegram_bot_token:
             raise HTTPException(status_code=503, detail="Telegram bot is not configured.")
         expected = (settings.telegram_webhook_secret or "").strip()
+        if settings.is_production and not expected:
+            raise HTTPException(
+                status_code=503,
+                detail="TELEGRAM_WEBHOOK_SECRET is required in production.",
+            )
         if expected and x_telegram_bot_api_secret_token != expected:
             raise HTTPException(status_code=403, detail="Invalid Telegram webhook secret.")
 
@@ -61,14 +79,25 @@ def register_telegram_routes(
 
         start = _START.match(text)
         if start:
-            tenant_id = (start.group("tenant") or "").strip()
-            if not tenant_id:
+            raw_payload = (start.group("payload") or "").strip()
+            if not raw_payload:
                 await send_telegram_text(
                     bot_token=settings.telegram_bot_token,
                     chat_id=str(chat_id),
                     text=(
-                        "Send an agency invite link to connect.\n"
-                        f"Example: https://t.me/{settings.telegram_bot_username}?start=port-vauban"
+                        "Send an agency invite link from the admin panel to connect.\n"
+                        "Invites are single-use and expire."
+                    ),
+                )
+                return {"ok": True}
+            tenant_id = await tenants.consume_telegram_desk_invite(raw_payload)
+            if tenant_id is None:
+                await send_telegram_text(
+                    bot_token=settings.telegram_bot_token,
+                    chat_id=str(chat_id),
+                    text=(
+                        "Invalid, expired, or already-used invite. "
+                        "Ask an operator to generate a new desk invite."
                     ),
                 )
                 return {"ok": True}
@@ -77,9 +106,18 @@ def register_telegram_routes(
                 await send_telegram_text(
                     bot_token=settings.telegram_bot_token,
                     chat_id=str(chat_id),
-                    text=f"Unknown or inactive agency `{tenant_id}`.",
+                    text="That agency is unavailable.",
                 )
                 return {"ok": True}
+            existing = (ctx.telegram_chat_id or "").strip()
+            if existing and existing != str(chat_id):
+                # Relink only via a fresh invite (already consumed above).
+                logger.info(
+                    "telegram desk relink tenant=%s from=%s to=%s",
+                    tenant_id,
+                    existing,
+                    chat_id,
+                )
             await tenants.set_tenant_telegram_chat_id(tenant_id, str(chat_id))
             await send_telegram_text(
                 bot_token=settings.telegram_bot_token,
@@ -104,6 +142,16 @@ def register_telegram_routes(
                     bot_token=settings.telegram_bot_token,
                     chat_id=str(chat_id),
                     text=f"Unknown agency `{tenant_id}`.",
+                )
+                return {"ok": True}
+            if str(chat_id) not in _authorized_operator_chat_ids(ctx):
+                await send_telegram_text(
+                    bot_token=settings.telegram_bot_token,
+                    chat_id=str(chat_id),
+                    text="Not authorized to mute for this agency.",
+                )
+                logger.warning(
+                    "telegram mute rejected tenant=%s chat_id=%s", tenant_id, chat_id
                 )
                 return {"ok": True}
             # WhatsApp Cloud API uses digit-only `from` ids; mute commands match that.

@@ -18,6 +18,7 @@ from fivecent.services.plugin_yachting.domain.quoting import (
 )
 from fivecent.domain.tenancy import TenantContext, pick_alert_brokers, telegram_dispatch_chat_ids
 from fivecent.services.plugin_yachting.ports import (
+    AlertOutboxRepo,
     BrokerAlertPort,
     FleetRepo,
     HoldRepo,
@@ -36,6 +37,7 @@ class YachtingTools:
         leads: LeadRepo,
         cache: CachePort,
         alerts: BrokerAlertPort,
+        alert_outbox: AlertOutboxRepo,
     ) -> None:
         self._fleet = fleet
         self._holds = holds
@@ -43,6 +45,7 @@ class YachtingTools:
         self._leads = leads
         self._cache = cache
         self._alerts = alerts
+        self._alert_outbox = alert_outbox
 
     def registry(self, boat_ids: list[str], tenant: TenantContext) -> list[Tool]:
         boat_schema: dict[str, Any] = {"type": "string"}
@@ -326,7 +329,8 @@ class YachtingTools:
         if boat is None:
             return _error("unknown_boat", "Unknown boat.")
         now = datetime.now(timezone.utc)
-        holds = await self._holds.list_active(tenant.id, now)
+        # Name/email validation only here; overlap + idempotency are enforced
+        # atomically in reserve_soft_hold (same-conversation replays reuse).
         approval = escalate_and_soft_hold(
             SoftHoldRequest(
                 customer_name=str(arguments.get("customer_name", "")),
@@ -335,45 +339,25 @@ class YachtingTools:
                 start_date=_parse_date(arguments.get("start_date")),
                 days=days,
             ),
-            holds,
+            (),
             now=now,
         )
         if isinstance(approval, DomainError):
             return _error(approval.code, approval.message)
-        quote_id: Optional[str] = arguments.get("quote_id")
-        if quote_id and await self._quotes.get(tenant.id, quote_id) is None:
-            return _error("unknown_quote", "Unknown quote_id. Calculate a quote first.")
-        lead_id = await self._leads.upsert_hold_lead(
-            tenant_id=tenant.id,
-            conversation_id=context.conversation_id,
-            customer_name=approval.customer_name,
-            email=approval.email,
-            boat_id=approval.boat_id,
-            start_date=approval.start_date,
-            days=approval.days,
-            quote_id=quote_id,
+        quote_id_raw = arguments.get("quote_id")
+        quote_id: Optional[str] = (
+            quote_id_raw if isinstance(quote_id_raw, str) and quote_id_raw else None
         )
-        reserved = await self._holds.create_if_available(
-            tenant_id=tenant.id,
-            boat_id=approval.boat_id,
-            start_date=approval.start_date,
-            days=approval.days,
-            now=now,
-            expires_at=approval.expires_at,
-            lead_id=lead_id,
-        )
-        if not reserved:
-            return _error("hold_conflict", "That boat already has an active option on those dates.")
         quote_total = None
         currency = tenant.currency
         if quote_id:
             quote = await self._quotes.get(tenant.id, quote_id)
-            if quote is not None:
-                quote_total = str(quote.total)
-                currency = quote.currency
+            if quote is None:
+                return _error("unknown_quote", "Unknown quote_id. Calculate a quote first.")
+            quote_total = str(quote.total)
+            currency = quote.currency
         payload = {
             "ok": True,
-            "lead_id": lead_id,
             "agency_name": tenant.agency_name,
             "customer_name": approval.customer_name,
             "email": approval.email,
@@ -389,8 +373,43 @@ class YachtingTools:
             **_guest_alert_fields(context),
             **await self._alert_routing_fields(tenant, context),
         }
-        await self._alerts.notify_hold(tenant.id, payload)
-        return json.dumps(payload)
+        reserved = await self._holds.reserve_soft_hold(
+            tenant_id=tenant.id,
+            conversation_id=context.conversation_id,
+            customer_name=approval.customer_name,
+            email=approval.email,
+            boat_id=approval.boat_id,
+            start_date=approval.start_date,
+            days=approval.days,
+            now=now,
+            expires_at=approval.expires_at,
+            quote_id=quote_id,
+            alert_payload=payload,
+        )
+        if reserved.status == "conflict":
+            return _error(
+                "hold_conflict", "That boat already has an active option on those dates."
+            )
+        if reserved.status == "unknown_boat":
+            return _error("unknown_boat", "Unknown boat.")
+        if reserved.status == "unknown_quote":
+            return _error("unknown_quote", "Unknown quote_id. Calculate a quote first.")
+        if reserved.status == "quote_mismatch":
+            return _error(
+                "quote_mismatch",
+                "quote_id does not match this boat, dates, duration, or conversation.",
+            )
+        assert reserved.payload is not None and reserved.alert_id is not None
+        final_payload = reserved.payload
+        if reserved.alert_status != "completed":
+            delivered = await self._alerts.notify_hold(tenant.id, final_payload)
+            if delivered:
+                await self._alert_outbox.mark_completed(reserved.alert_id)
+            else:
+                await self._alert_outbox.mark_failed(
+                    reserved.alert_id, "one or more alert channels failed"
+                )
+        return json.dumps(final_payload)
 
     async def _selected_alert_brokers(self, tenant: TenantContext) -> list[dict[str, Any]]:
         rr = (

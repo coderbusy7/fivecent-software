@@ -370,16 +370,28 @@ with flags_tab:
 with telegram_tab:
     st.subheader("Dispatch bot onboarding")
     st.caption(
-        "One central bot for all agencies. Send the invite link to the broker — "
-        "they tap Start and Fivecent stores their chat_id. No per-agency bot tokens."
+        "One central bot for all agencies. Generate a single-use invite, send it to the "
+        "broker — they tap Start and Fivecent stores their chat_id. Invites expire in 24h."
     )
     invite = tenant.get("telegram_invite_link") or ""
     desk = tenant.get("telegram_chat_id") or ""
+    if st.button("Generate desk invite", key="gen_tg_invite"):
+        minted = api_request(
+            "POST",
+            f"/internal/tenants/{selected}/telegram-invite",
+        )
+        if minted is None:
+            st.stop()
+        if minted.is_success:
+            st.success("Invite created")
+            st.rerun()
+        else:
+            _error(minted)
     if invite:
         st.code(invite, language=None)
         st.link_button("Open invite in Telegram", invite, use_container_width=False)
     else:
-        st.warning("Invite link unavailable — check TELEGRAM_BOT_USERNAME on the API.")
+        st.info("No open invite — click Generate desk invite, then send the link to the broker.")
 
     if desk:
         st.success(f"Desk connected · telegram_chat_id = `{desk}`")

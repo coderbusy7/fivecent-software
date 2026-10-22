@@ -94,7 +94,7 @@ class ChannelSender(Protocol):
 class OpsAlertPort(Protocol):
     """Kernel-facing broker push (Telegram today). Used for ops handoffs like 131047."""
 
-    async def notify_handoff(self, tenant_id: str, payload: dict) -> None: ...
+    async def notify_handoff(self, tenant_id: str, payload: dict) -> bool: ...
 
 
 class TenantRepo(Protocol):

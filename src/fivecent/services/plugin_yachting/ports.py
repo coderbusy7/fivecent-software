@@ -1,18 +1,39 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import date, datetime
-from typing import Optional, Protocol, Sequence
+from typing import Any, Literal, Optional, Protocol, Sequence
 
 from fivecent.services.plugin_yachting.domain.fleet import ActiveHold
 from fivecent.services.plugin_yachting.domain.quoting import Boat, QuoteBreakdown
 
+SoftHoldStatus = Literal[
+    "reserved",
+    "conflict",
+    "unknown_boat",
+    "unknown_quote",
+    "quote_mismatch",
+]
+
+
+@dataclass(frozen=True)
+class SoftHoldReserveResult:
+    status: SoftHoldStatus
+    lead_id: Optional[str] = None
+    hold_id: Optional[str] = None
+    alert_id: Optional[str] = None
+    expires_at: Optional[datetime] = None
+    reused: bool = False
+    alert_status: Optional[str] = None
+    payload: Optional[dict[str, Any]] = None
+
 
 class BrokerAlertPort(Protocol):
-    async def notify_hold(self, tenant_id: str, payload: dict) -> None: ...
+    async def notify_hold(self, tenant_id: str, payload: dict) -> bool: ...
 
-    async def notify_handoff(self, tenant_id: str, payload: dict) -> None: ...
+    async def notify_handoff(self, tenant_id: str, payload: dict) -> bool: ...
 
-    async def notify_followup(self, tenant_id: str, payload: dict) -> None: ...
+    async def notify_followup(self, tenant_id: str, payload: dict) -> bool: ...
 
 
 class BrokerAlertChannel(Protocol):
@@ -42,6 +63,22 @@ class HoldRepo(Protocol):
         lead_id: str,
     ) -> bool: ...
 
+    async def reserve_soft_hold(
+        self,
+        *,
+        tenant_id: str,
+        conversation_id: str,
+        customer_name: str,
+        email: str,
+        boat_id: str,
+        start_date: date,
+        days: int,
+        now: datetime,
+        expires_at: datetime,
+        quote_id: Optional[str],
+        alert_payload: dict[str, Any],
+    ) -> SoftHoldReserveResult: ...
+
 
 class QuoteRepo(Protocol):
     async def save(
@@ -64,3 +101,15 @@ class LeadRepo(Protocol):
         days: int,
         quote_id: Optional[str],
     ) -> str: ...
+
+
+class AlertOutboxRepo(Protocol):
+    async def mark_completed(self, alert_id: str) -> None: ...
+
+    async def mark_failed(self, alert_id: str, error: str) -> None: ...
+
+    async def list_pending(self, *, limit: int = 50) -> Sequence[dict[str, Any]]: ...
+
+    async def flush_pending(
+        self, alerts: BrokerAlertPort, *, limit: int = 50
+    ) -> dict[str, int]: ...

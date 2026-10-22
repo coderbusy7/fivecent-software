@@ -27,23 +27,26 @@ class CompositeBrokerAlerts(BrokerAlertPort):
     def __init__(self, channels: Sequence[BrokerAlertChannel]) -> None:
         self._channels = list(channels)
 
-    async def notify_hold(self, tenant_id: str, payload: dict) -> None:
-        await self._deliver(tenant_id, "hold", payload)
+    async def notify_hold(self, tenant_id: str, payload: dict) -> bool:
+        return await self._deliver(tenant_id, "hold", payload)
 
-    async def notify_handoff(self, tenant_id: str, payload: dict) -> None:
-        await self._deliver(tenant_id, "handoff", payload)
+    async def notify_handoff(self, tenant_id: str, payload: dict) -> bool:
+        return await self._deliver(tenant_id, "handoff", payload)
 
-    async def notify_followup(self, tenant_id: str, payload: dict) -> None:
-        await self._deliver(tenant_id, "followup", payload)
+    async def notify_followup(self, tenant_id: str, payload: dict) -> bool:
+        return await self._deliver(tenant_id, "followup", payload)
 
-    async def _deliver(self, tenant_id: str, kind: str, payload: dict) -> None:
+    async def _deliver(self, tenant_id: str, kind: str, payload: dict) -> bool:
+        ok = True
         for channel in self._channels:
             try:
                 await channel.deliver(tenant_id, kind, payload)
             except Exception:
+                ok = False
                 logger.exception(
                     "broker alert channel failed kind=%s tenant=%s channel=%s",
                     kind,
                     tenant_id,
                     type(channel).__name__,
                 )
+        return ok

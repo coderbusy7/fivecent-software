@@ -31,12 +31,18 @@ async def test_dispatch_bot_onboard_alert_mute_hitl(container, settings) -> None
         ) as reply,
         TestClient(app) as client,
     ):
-        # 1) Broker deep-link onboarding
+        # 1) Broker single-use invite onboarding
+        invite = client.post(
+            "/internal/tenants/port-vauban/telegram-invite",
+            headers={"Authorization": "Bearer admin-secret"},
+        )
+        assert invite.status_code == 200
+        token = invite.json()["token"]
         start = client.post(
             "/telegram/webhook",
             json={
                 "message": {
-                    "text": "/start port-vauban",
+                    "text": f"/start {token}",
                     "chat": {"id": 11223344},
                 }
             },
@@ -51,7 +57,6 @@ async def test_dispatch_bot_onboard_alert_mute_hitl(container, settings) -> None
         assert tenant.status_code == 200
         body = tenant.json()
         assert body["telegram_chat_id"] == "11223344"
-        assert body["telegram_invite_link"].endswith("?start=port-vauban")
 
     ctx = await container.tenants.get("port-vauban")
     assert ctx is not None

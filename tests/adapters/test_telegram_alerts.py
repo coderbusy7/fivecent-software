@@ -131,5 +131,6 @@ async def test_composite_continues_after_channel_failure() -> None:
             delivered.append((tenant_id, kind))
 
     composite = CompositeBrokerAlerts([Boom(), Ok(), LogBrokerAlerts()])
-    await composite.notify_hold("port-vauban", {"ok": True})
+    ok = await composite.notify_hold("port-vauban", {"ok": True})
+    assert ok is False
     assert delivered == [("port-vauban", "hold")]

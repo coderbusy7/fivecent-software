@@ -1,15 +1,16 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+import secrets
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
-from typing import Optional
+from typing import Any, Optional
 from uuid import uuid4
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from fivecent.adapters.persistence.models import Broker as BrokerRow
-from fivecent.adapters.persistence.models import Tenant
+from fivecent.adapters.persistence.models import TelegramDeskInvite, Tenant
 from fivecent.domain.tenancy import (
     DEFAULT_FEATURE_FLAGS,
     Broker,
@@ -280,3 +281,84 @@ class SqlTenantRepo:
         return await self.update_tenant(
             tenant_id, telegram_chat_id=str(telegram_chat_id).strip()
         )
+
+    async def create_telegram_desk_invite(
+        self,
+        tenant_id: str,
+        *,
+        ttl_hours: int = 24,
+        bot_username: str = "fivecent_test_bot",
+    ) -> Optional[dict[str, Any]]:
+        ctx = await self.get(tenant_id)
+        if ctx is None or not ctx.is_active:
+            return None
+        hours = max(1, min(int(ttl_hours), 168))
+        token = secrets.token_urlsafe(18)
+        now = datetime.now(timezone.utc)
+        expires_at = now + timedelta(hours=hours)
+        async with self._sessions() as session:
+            session.add(
+                TelegramDeskInvite(
+                    token=token,
+                    tenant_id=tenant_id,
+                    expires_at=expires_at,
+                    used_at=None,
+                    created_at=now,
+                )
+            )
+            await session.commit()
+        return {
+            "token": token,
+            "tenant_id": tenant_id,
+            "expires_at": expires_at.isoformat(),
+            "invite_link": f"https://t.me/{bot_username}?start={token}",
+        }
+
+    async def latest_open_telegram_invite(
+        self, tenant_id: str, *, bot_username: str = "fivecent_test_bot"
+    ) -> Optional[dict[str, Any]]:
+        now = datetime.now(timezone.utc)
+        async with self._sessions() as session:
+            row = await session.scalar(
+                select(TelegramDeskInvite)
+                .where(
+                    TelegramDeskInvite.tenant_id == tenant_id,
+                    TelegramDeskInvite.used_at.is_(None),
+                    TelegramDeskInvite.expires_at > now,
+                )
+                .order_by(TelegramDeskInvite.created_at.desc())
+                .limit(1)
+            )
+        if row is None:
+            return None
+        return {
+            "token": row.token,
+            "tenant_id": row.tenant_id,
+            "expires_at": row.expires_at.isoformat(),
+            "invite_link": f"https://t.me/{bot_username}?start={row.token}",
+        }
+
+    async def consume_telegram_desk_invite(self, token: str) -> Optional[str]:
+        """Mark invite used and return tenant_id, or None if invalid/expired/used."""
+        cleaned = (token or "").strip()
+        if not cleaned:
+            return None
+        now = datetime.now(timezone.utc)
+        async with self._sessions() as session, session.begin():
+            row = await session.scalar(
+                select(TelegramDeskInvite)
+                .where(TelegramDeskInvite.token == cleaned)
+                .with_for_update()
+            )
+            if row is None or row.used_at is not None:
+                return None
+            expires = row.expires_at
+            if expires.tzinfo is None:
+                expires = expires.replace(tzinfo=timezone.utc)
+            if expires <= now:
+                return None
+            tenant = await session.get(Tenant, row.tenant_id)
+            if tenant is None or not tenant.is_active:
+                return None
+            row.used_at = now
+            return row.tenant_id

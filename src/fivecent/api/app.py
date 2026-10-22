@@ -6,7 +6,7 @@ import logging
 from contextlib import asynccontextmanager
 from typing import Optional
 
-from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi import FastAPI, Header, HTTPException, Query, Request
 from fastapi.responses import PlainTextResponse
 
 from fivecent.adapters.inbound.http_chat import ChatInput, chat_to_event
@@ -14,6 +14,7 @@ from fivecent.messaging.factory import build_inbound_plugins
 from fivecent.messaging.plugin_whatsapp.callback import sync_waba_webhook_override
 from fivecent.messaging.graph import WebhookAdapter
 from fivecent.adapters.persistence.engine import init_database, make_engine, make_sessionmaker
+from fivecent.api.chat_guard import enforce_chat_access
 from fivecent.api.internal import register_internal_routes
 from fivecent.application.ports import Container
 from fivecent.application.registry import PluginRegistry
@@ -21,6 +22,7 @@ from fivecent.application.turn import handle_turn
 from fivecent.composition import build_container
 from fivecent.config import Settings, get_settings
 from fivecent.messaging.plugin_telegram import register_telegram_routes
+from fivecent.production import readiness_report, validate_production_settings
 
 logger = logging.getLogger(__name__)
 
@@ -46,6 +48,7 @@ def create_app(
         if container is not None:
             app.state.container = container
             app.state.settings = settings
+            app.state.sessions = getattr(container.tenants, "_sessions", None)
             app.state.phone_map = (
                 phone_map if phone_map is not None else _phone_map(settings)
             )
@@ -53,12 +56,14 @@ def create_app(
             yield
             return
 
+        validate_production_settings(settings)
         engine = make_engine(settings.database_url)
         sessions = make_sessionmaker(engine)
         await init_database(engine, sessions, settings)
         built = await build_container(settings, engine=engine, sessions=sessions)
         app.state.container = built
         app.state.settings = settings
+        app.state.sessions = sessions
         app.state.webhook_adapters = webhook_adapters
         mapping = _phone_map(settings)
         mapping.update(await built.tenants.channel_routing_map("whatsapp"))
@@ -77,10 +82,28 @@ def create_app(
             "ok": True,
             "service": "fivecent",
             "health": "/health",
+            "live": "/live",
+            "ready": "/ready",
             "chat": "POST /chat",
             "webhook": "/webhook",
             "admin": "Streamlit on ADMIN_PORT, not this API",
         }
+
+    @app.get("/live")
+    def live() -> dict[str, object]:
+        """Liveness: process is up. Prefer this for orchestrator restart probes."""
+        return {"ok": True}
+
+    @app.get("/ready")
+    async def ready() -> dict[str, object]:
+        """Readiness: dependencies that must work before taking traffic."""
+        current: Settings = getattr(app.state, "settings", settings)
+        report = await readiness_report(
+            current, sessions=getattr(app.state, "sessions", None)
+        )
+        if not report["ready"]:
+            raise HTTPException(status_code=503, detail=report)
+        return report
 
     @app.get("/health")
     def health() -> dict[str, object]:
@@ -110,10 +133,19 @@ def create_app(
                 "bot_username": current.telegram_bot_username or "fivecent_test_bot",
                 "webhook_secret": bool(current.telegram_webhook_secret),
             },
+            "app_env": current.app_env,
+            "test_chat": current.chat_enabled(),
+            "probes": {"live": "/live", "ready": "/ready"},
         }
 
     @app.post("/chat")
-    async def chat(payload: ChatInput) -> dict[str, str]:
+    async def chat(
+        payload: ChatInput,
+        request: Request,
+        authorization: str = Header(default=""),
+    ) -> dict[str, str]:
+        current_settings: Settings = getattr(app.state, "settings", settings)
+        enforce_chat_access(current_settings, request, authorization)
         current: Container = app.state.container
         event = chat_to_event(payload, current.seed_tenant_id)
         result = await handle_turn(event, current)

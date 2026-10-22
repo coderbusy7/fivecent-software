@@ -256,8 +256,9 @@ async def test_session_window_closed_notifies_brokers_and_skips(container) -> No
         def __init__(self) -> None:
             self.handoffs: list[tuple[str, dict]] = []
 
-        async def notify_handoff(self, tenant_id: str, payload: dict) -> None:
+        async def notify_handoff(self, tenant_id: str, payload: dict) -> bool:
             self.handoffs.append((tenant_id, payload))
+            return True
 
     alerts = CaptureAlerts()
     container.sender = WindowClosedSender()
