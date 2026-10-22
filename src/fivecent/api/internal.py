@@ -143,6 +143,22 @@ class UserCreate(BaseModel):
     tenant_id: Optional[str] = None
 
 
+class ClientInvite(BaseModel):
+    email: str = Field(min_length=3, max_length=255)
+    display_name: str = Field(min_length=1, max_length=255)
+    tenant_id: str = Field(min_length=1, max_length=64)
+
+
+class PortalSetPassword(BaseModel):
+    invite_token: str = Field(min_length=16, max_length=128)
+    password: str = Field(min_length=12, max_length=128)
+
+
+class PortalLogin(BaseModel):
+    email: str = Field(min_length=3, max_length=255)
+    password: str = Field(min_length=12, max_length=128)
+
+
 class ConversationOpsPatch(BaseModel):
     assigned_broker_id: Optional[str] = None
     handoff_status: Optional[str] = Field(
@@ -179,6 +195,10 @@ async def _resolve_actor(
 
 
 def _require_role(actor: Actor, minimum: Role) -> None:
+    if actor.is_client():
+        raise HTTPException(
+            status_code=403, detail="Client portal users cannot access company admin."
+        )
     if not actor.can(minimum):
         raise HTTPException(status_code=403, detail="Insufficient role.")
 
@@ -186,6 +206,11 @@ def _require_role(actor: Actor, minimum: Role) -> None:
 def _require_tenant(actor: Actor, tenant_id: str) -> None:
     if not actor.may_access_tenant(tenant_id):
         raise HTTPException(status_code=403, detail="Tenant access denied.")
+
+
+def _require_client(actor: Actor) -> None:
+    if not actor.is_client() or not actor.tenant_id:
+        raise HTTPException(status_code=403, detail="Client portal access required.")
 
 
 def _serialize_tenant(
@@ -961,7 +986,19 @@ def register_internal_routes(app, *, get_container, get_settings_fn) -> None:
 
     @router.post("/users/{user_id}/disable")
     async def disable_user(user_id: str, current: Actor = Depends(actor)) -> dict:
-        _require_role(current, "platform_admin")
+        _require_role(current, "agency_admin")
+        # Look up before revoke so agency admins can only disable their tenant's clients.
+        existing_rows = await users().list_users()
+        target = next((row for row in existing_rows if row["user_id"] == user_id), None)
+        if target is None:
+            raise HTTPException(status_code=404, detail="User not found.")
+        if current.role != "platform_admin":
+            if target.get("role") != "client_user":
+                raise HTTPException(
+                    status_code=403, detail="Only platform admins can disable staff accounts."
+                )
+            if not target.get("tenant_id") or not current.may_access_tenant(target["tenant_id"]):
+                raise HTTPException(status_code=403, detail="Tenant access denied.")
         disabled = await users().disable_user(user_id)
         if disabled is None:
             raise HTTPException(status_code=404, detail="User not found.")
@@ -1073,6 +1110,108 @@ def register_internal_routes(app, *, get_container, get_settings_fn) -> None:
             "email": current.email,
             "role": current.role,
             "tenant_id": current.tenant_id,
+            "workspace": "client_portal" if current.is_client() else "company_admin",
         }
+
+    # --- ED-15 client portal (read-only analytics) ---------------------------
+
+    @router.post("/portal/invite")
+    async def invite_client_user(
+        payload: ClientInvite, current: Actor = Depends(actor)
+    ) -> dict:
+        _require_role(current, "agency_admin")
+        _require_tenant(current, payload.tenant_id)
+        if await tenants().get(payload.tenant_id) is None:
+            raise HTTPException(status_code=404, detail="Tenant not found.")
+        try:
+            invited = await users().invite_client(
+                email=payload.email,
+                display_name=payload.display_name,
+                tenant_id=payload.tenant_id,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        await audit_write(
+            current,
+            tenant_id=payload.tenant_id,
+            action="invite",
+            resource_type="client_user",
+            resource_id=invited["user_id"],
+            after={"email": invited["email"], "role": "client_user"},
+        )
+        return invited
+
+    @router.post("/portal/set-password")
+    async def portal_set_password(payload: PortalSetPassword) -> dict:
+        try:
+            result = await users().set_password_from_invite(
+                payload.invite_token, payload.password
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        await users().record_audit(
+            actor=None,
+            tenant_id=result.get("tenant_id"),
+            action="set_password",
+            resource_type="client_user",
+            resource_id=result["user_id"],
+        )
+        return {
+            "user_id": result["user_id"],
+            "email": result["email"],
+            "display_name": result["display_name"],
+            "role": result["role"],
+            "tenant_id": result["tenant_id"],
+            "api_token": result["api_token"],
+        }
+
+    @router.post("/portal/login")
+    async def portal_login(payload: PortalLogin) -> dict:
+        try:
+            result = await users().authenticate_password(payload.email, payload.password)
+        except ValueError as exc:
+            raise HTTPException(status_code=401, detail=str(exc)) from exc
+        return {
+            "user_id": result["user_id"],
+            "email": result["email"],
+            "display_name": result["display_name"],
+            "role": result["role"],
+            "tenant_id": result["tenant_id"],
+            "api_token": result["api_token"],
+        }
+
+    @router.get("/portal/overview")
+    async def portal_overview(current: Actor = Depends(actor)) -> dict:
+        _require_client(current)
+        assert current.tenant_id is not None
+        ctx = await tenants().get(current.tenant_id)
+        if ctx is None:
+            raise HTTPException(status_code=404, detail="Agency not found.")
+        return {
+            "tenant_id": ctx.id,
+            "agency_name": ctx.agency_name,
+            "home_port": ctx.home_port,
+            "currency": ctx.currency,
+            "is_active": ctx.is_active,
+            "user": {
+                "email": current.email,
+                "role": current.role,
+            },
+        }
+
+    @router.get("/portal/analytics")
+    async def portal_analytics(
+        current: Actor = Depends(actor),
+        date_from: Optional[str] = None,
+        date_to: Optional[str] = None,
+    ) -> dict:
+        _require_client(current)
+        assert current.tenant_id is not None
+        try:
+            return await ops().agency_analytics(
+                current.tenant_id, date_from=date_from, date_to=date_to
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     app.include_router(router)

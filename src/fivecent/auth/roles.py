@@ -1,4 +1,4 @@
-"""Named-user roles and tenant authorization (ED-6)."""
+"""Named-user roles and tenant authorization (ED-6 / ED-15)."""
 
 from __future__ import annotations
 
@@ -8,13 +8,17 @@ import secrets
 from dataclasses import dataclass
 from typing import Literal, Optional
 
-Role = Literal["platform_admin", "agency_admin", "broker"]
+Role = Literal["client_user", "broker", "agency_admin", "platform_admin"]
 
 ROLE_RANK = {
+    "client_user": 0,
     "broker": 1,
     "agency_admin": 2,
     "platform_admin": 3,
 }
+
+COMPANY_ROLES = frozenset({"broker", "agency_admin", "platform_admin"})
+CLIENT_ROLES = frozenset({"client_user"})
 
 
 @dataclass(frozen=True)
@@ -26,6 +30,12 @@ class Actor:
 
     def can(self, minimum: Role) -> bool:
         return ROLE_RANK.get(self.role, 0) >= ROLE_RANK.get(minimum, 99)
+
+    def is_company_staff(self) -> bool:
+        return self.role in COMPANY_ROLES
+
+    def is_client(self) -> bool:
+        return self.role in CLIENT_ROLES
 
     def may_access_tenant(self, tenant_id: str) -> bool:
         if self.role == "platform_admin":

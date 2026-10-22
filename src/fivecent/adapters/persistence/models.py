@@ -82,6 +82,10 @@ class AdminUser(Base):
     tenant_id: Mapped[Optional[str]] = mapped_column(ForeignKey("tenants.id"), nullable=True)
     password_hash: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     api_token_hash: Mapped[Optional[str]] = mapped_column(String(128), unique=True, nullable=True)
+    invite_token_hash: Mapped[Optional[str]] = mapped_column(String(128), unique=True, nullable=True)
+    invite_expires_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     disabled_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)

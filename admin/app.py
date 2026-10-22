@@ -137,7 +137,7 @@ if not session_valid(session, admin_settings):
     _, login_column, _ = st.columns([1, 2, 1])
     with login_column:
         st.title("Fivecent")
-        st.subheader("Admin sign in")
+        st.subheader("Company admin sign in")
         st.caption("Secure operator access to your agencies, brokers and messaging settings.")
         if notice := st.session_state.pop("login_notice", ""):
             st.error(notice)
@@ -145,20 +145,22 @@ if not session_valid(session, admin_settings):
             st.text_input("Username", key="login_username")
             st.text_input("Password", type="password", key="login_password")
             st.form_submit_button("Sign in", on_click=_sign_in, use_container_width=True)
-        st.caption("Restricted to authorized operators. Contact your administrator for access.")
+        st.caption("Restricted to authorized company staff.")
+        st.info("Client agency users: open **Client portal** in the sidebar (separate login).")
     st.stop()
 
 st.session_state["admin_session"]["last_seen"] = time.monotonic()
 
 with st.sidebar:
     st.title("Fivecent")
-    st.caption("ADMIN WORKSPACE")
+    st.caption("COMPANY ADMIN WORKSPACE")
     st.write(f"Signed in as **{admin_settings.username}**")
     st.button("Sign out", on_click=_sign_out, use_container_width=True)
     st.divider()
     st.subheader("Agencies")
     st.button("Reload agencies", use_container_width=True)
     st.caption("Sessions expire after 30 minutes of inactivity or 8 hours total.")
+    st.caption("Client analytics: use the **Client portal** page (separate entry).")
 
 st.title("Agency workspace")
 st.caption("Manage agency identity, financial guardrails, AI services and broker connections.")
@@ -756,7 +758,9 @@ with telegram_tab:
 
 with users_tab:
     st.subheader("Named operators")
-    st.caption("Platform admins mint API tokens for agency admins and brokers. Disable revokes access immediately.")
+    st.caption(
+        "Company staff API tokens and client portal invites. Disable revokes access immediately."
+    )
     users_resp = api_request("GET", "/internal/users")
     if users_resp is None:
         st.stop()
@@ -770,9 +774,56 @@ with users_tab:
             st.info("No named users yet.")
         else:
             st.dataframe(named, hide_index=True, use_container_width=True)
+            for row in named:
+                if not row.get("is_active"):
+                    continue
+                label = f"Revoke {row.get('email')}"
+                if st.button(label, key=f"revoke_{row['user_id']}"):
+                    revoked = api_request(
+                        "POST", f"/internal/users/{row['user_id']}/disable"
+                    )
+                    if revoked and revoked.is_success:
+                        st.session_state["flash_success"] = f"Revoked {row.get('email')}"
+                        st.rerun()
+                    elif revoked:
+                        _error(revoked)
+
+        st.markdown("**Invite client portal user**")
+        st.caption(
+            "Creates a read-only client for this agency. Send them the invite token; "
+            "they set a password on the Client portal page."
+        )
+        with st.form("invite_client"):
+            client_email = st.text_input("Client email")
+            client_name = st.text_input("Display name")
+            invite_client = st.form_submit_button("Invite client")
+        if invite_client:
+            if not client_email.strip() or not client_name.strip():
+                st.error("Email and display name are required.")
+            else:
+                resp = api_request(
+                    "POST",
+                    "/internal/portal/invite",
+                    json={
+                        "email": client_email.strip(),
+                        "display_name": client_name.strip(),
+                        "tenant_id": selected,
+                    },
+                )
+                if resp is None:
+                    st.stop()
+                if resp.is_success:
+                    body = resp.json()
+                    st.success("Invite created — copy the token now; it is shown once.")
+                    st.code(body.get("invite_token") or "", language=None)
+                    st.caption(f"Expires {body.get('invite_expires_at')}")
+                else:
+                    _error(resp)
+
         with st.form("create_user"):
-            email = st.text_input("Email")
-            display_name = st.text_input("Display name")
+            st.markdown("**Create company staff user**")
+            email = st.text_input("Email", key="staff_email")
+            display_name = st.text_input("Display name", key="staff_name")
             role = st.selectbox(
                 "Role", options=["platform_admin", "agency_admin", "broker"]
             )
@@ -781,7 +832,7 @@ with users_tab:
                 value=selected if role != "platform_admin" else "",
                 help="Required for agency_admin and broker.",
             )
-            create_user = st.form_submit_button("Create user")
+            create_user = st.form_submit_button("Create staff user")
         if create_user:
             if not email.strip() or not display_name.strip():
                 st.error("Email and display name are required.")

@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from fivecent.adapters.persistence.models import (
     AdminAuditLog,
+    Conversation,
     InboundPayload,
     Message,
     TenantUsageDaily,
@@ -190,6 +191,116 @@ class SqlOpsRepo:
 
         repo = SqlConversationRepo(self._sessions)
         return await repo.get_conversation(tenant_id, conversation_id)
+
+    async def agency_analytics(
+        self,
+        tenant_id: str,
+        *,
+        date_from: Optional[str] = None,
+        date_to: Optional[str] = None,
+    ) -> dict:
+        """Read-only agency activity for the client portal (ED-15).
+
+        Counts are operational signals — not bookings or recognized revenue.
+        """
+        from fivecent.services.plugin_yachting.persistence.models import Lead, Quote
+
+        start, end = _parse_date_bounds(date_from, date_to)
+        async with self._sessions() as session:
+            inquiries = await session.scalar(
+                select(func.count())
+                .select_from(Message)
+                .where(
+                    Message.tenant_id == tenant_id,
+                    Message.role == "user",
+                    Message.created_at >= start,
+                    Message.created_at < end,
+                )
+            )
+            conversations = await session.scalar(
+                select(func.count())
+                .select_from(Conversation)
+                .where(
+                    Conversation.tenant_id == tenant_id,
+                    Conversation.updated_at.is_not(None),
+                    Conversation.updated_at >= start,
+                    Conversation.updated_at < end,
+                )
+            )
+            handoffs = await session.scalar(
+                select(func.count())
+                .select_from(Conversation)
+                .where(
+                    Conversation.tenant_id == tenant_id,
+                    Conversation.handoff_status.in_(
+                        ["assigned", "taken_over", "resolved"]
+                    ),
+                    Conversation.updated_at.is_not(None),
+                    Conversation.updated_at >= start,
+                    Conversation.updated_at < end,
+                )
+            )
+            leads = await session.scalar(
+                select(func.count())
+                .select_from(Lead)
+                .where(
+                    Lead.tenant_id == tenant_id,
+                    Lead.created_at >= start,
+                    Lead.created_at < end,
+                )
+            )
+            quotes = await session.scalar(
+                select(func.count())
+                .select_from(Quote)
+                .where(
+                    Quote.tenant_id == tenant_id,
+                    Quote.created_at >= start,
+                    Quote.created_at < end,
+                )
+            )
+        return {
+            "tenant_id": tenant_id,
+            "period": {
+                "from": start.isoformat(),
+                "to": end.isoformat(),
+            },
+            "metrics": {
+                "inquiries": int(inquiries or 0),
+                "active_conversations": int(conversations or 0),
+                "leads": int(leads or 0),
+                "quotes": int(quotes or 0),
+                "broker_handoffs": int(handoffs or 0),
+            },
+            "disclaimer": (
+                "Figures are activity counts from persisted messages, leads, quotes "
+                "and handoffs. They are not confirmed bookings or revenue unless a "
+                "separate outcome is recorded."
+            ),
+        }
+
+
+def _parse_date_bounds(
+    date_from: Optional[str], date_to: Optional[str]
+) -> tuple[datetime, datetime]:
+    now = datetime.now(timezone.utc)
+    if date_to:
+        end = datetime.fromisoformat(date_to.replace("Z", "+00:00"))
+        if end.tzinfo is None:
+            end = end.replace(tzinfo=timezone.utc)
+        # Inclusive calendar day when only a date is provided.
+        if len(date_to) <= 10:
+            end = end + timedelta(days=1)
+    else:
+        end = now + timedelta(seconds=1)
+    if date_from:
+        start = datetime.fromisoformat(date_from.replace("Z", "+00:00"))
+        if start.tzinfo is None:
+            start = start.replace(tzinfo=timezone.utc)
+    else:
+        start = end - timedelta(days=30)
+    if start >= end:
+        raise ValueError("date_from must be before date_to.")
+    return start, end
 
 
 async def commercial_context(
