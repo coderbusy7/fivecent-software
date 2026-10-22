@@ -19,9 +19,8 @@ if [[ -f "$ROOT/.env" ]]; then
   set +a
 fi
 
+"$PYTHON" -c "from fivecent.admin_auth import AdminSettings; AdminSettings().validate_configuration()"
 "$PYTHON" -m alembic upgrade head
-
-export ADMIN_API_TOKEN="${ADMIN_API_TOKEN:-dev-admin}"
 API_HOST="${API_HOST:-127.0.0.1}"
 API_PORT="${API_PORT:-8000}"
 ADMIN_PORT="${ADMIN_PORT:-8501}"

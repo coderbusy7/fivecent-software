@@ -1,17 +1,19 @@
 """Internal Streamlit admin. Talks only to the FastAPI /internal API.
 
-    export ADMIN_API_TOKEN=...
+    # Configure ADMIN_USERNAME, ADMIN_PASSWORD_HASH and ADMIN_API_TOKEN first.
     uvicorn fivecent.api.app:app --host 127.0.0.1 --port 8000
     streamlit run admin/app.py
 """
 
 from __future__ import annotations
 
-import os
+import time
 from typing import Any
 
 import httpx
 import streamlit as st
+
+from fivecent.admin_auth import AdminSettings, LoginLimiter, session_valid
 
 FLAG_LABELS = [
     ("enable_instant_quote", "Instant quotes"),
@@ -24,8 +26,8 @@ FLAG_LABELS = [
 
 
 def _client() -> httpx.Client:
-    base = st.session_state.get("api_base", "http://127.0.0.1:8000").rstrip("/")
-    token = st.session_state.get("admin_token", "")
+    base = admin_settings.api_base.rstrip("/")
+    token = admin_settings.api_token
     return httpx.Client(
         base_url=base,
         headers={"Authorization": f"Bearer {token}"},
@@ -35,31 +37,39 @@ def _client() -> httpx.Client:
 
 def _error(response: httpx.Response) -> None:
     try:
-        detail = response.json().get("detail", response.text)
-    except Exception:
+        body = response.json()
+        detail = body.get("detail", response.text) if isinstance(body, dict) else response.text
+    except ValueError:
         detail = response.text
     st.error(f"{response.status_code}: {detail}")
 
 
 def api_request(method: str, path: str, **kwargs: Any) -> httpx.Response | None:
+    if not session_valid(st.session_state.get("admin_session"), admin_settings):
+        _sign_out("Your session expired. Please sign in again.")
+        st.rerun()
     try:
         with _client() as client:
-            return client.request(method, path, **kwargs)
-    except httpx.ConnectError:
+            response = client.request(method, path, **kwargs)
+        if response.status_code in (401, 403):
+            _sign_out("Admin API access was denied. Ask your operator to check ADMIN_API_TOKEN.")
+            st.rerun()
+        return response
+    except httpx.RequestError:
         st.error(
-            "Cannot reach the API (connection refused). "
-            "Wait until uvicorn is up, check the API base URL, then click Reload agencies."
+            "Cannot reach the admin API. Check that the backend is running and "
+            "ADMIN_API_BASE is correct, then try again."
         )
         return None
 
 
-def list_tenants() -> list[dict[str, Any]]:
+def list_tenants() -> list[dict[str, Any]] | None:
     response = api_request("GET", "/internal/tenants")
     if response is None:
-        return []
+        return None
     if response.status_code != 200:
         _error(response)
-        return []
+        return None
     return response.json()
 
 
@@ -73,43 +83,114 @@ def get_tenant(tenant_id: str) -> dict[str, Any] | None:
     return response.json()
 
 
-st.set_page_config(page_title="Fivecent internal admin", layout="wide")
-st.title("Fivecent internal admin")
-st.caption("Operator-only. Agencies cannot see this. Changes go through the FastAPI admin API.")
+def _sign_out(message: str = "") -> None:
+    st.session_state.clear()
+    if message:
+        st.session_state["login_notice"] = message
 
-with st.sidebar:
-    st.subheader("Connection")
-    st.text_input("API base URL", value=os.environ.get("ADMIN_API_BASE", "http://127.0.0.1:8000"), key="api_base")
-    st.text_input(
-        "Admin token",
-        value=os.environ.get("ADMIN_API_TOKEN", ""),
-        type="password",
-        key="admin_token",
-        help="Same value as ADMIN_API_TOKEN on the API process.",
-    )
-    if st.button("Reload agencies"):
-        st.session_state.pop("tenants", None)
 
-if not st.session_state.get("admin_token"):
-    st.info("Set ADMIN_API_TOKEN in the sidebar (and on uvicorn).")
+@st.cache_resource
+def _login_limiter() -> LoginLimiter:
+    return LoginLimiter()
+
+
+def _sign_in() -> None:
+    username = st.session_state.pop("login_username", "")
+    password = st.session_state.pop("login_password", "")
+    accepted, limited = _login_limiter().authenticate(username, password, admin_settings)
+    if accepted:
+        now = time.monotonic()
+        st.session_state["admin_session"] = {
+            "fingerprint": admin_settings.fingerprint,
+            "started": now,
+            "last_seen": now,
+        }
+        st.session_state.pop("login_notice", None)
+    elif limited:
+        st.session_state["login_notice"] = "Too many failed attempts. Try again in one minute."
+    else:
+        st.session_state["login_notice"] = "Invalid username or password."
+
+
+st.set_page_config(
+    page_title="Fivecent | Admin", page_icon=":material/admin_panel_settings:", layout="wide"
+)
+admin_settings = AdminSettings()
+try:
+    admin_settings.validate_configuration()
+except ValueError as exc:
+    st.title("Fivecent admin")
+    st.error(f"Admin sign-in is not configured. {exc}")
+    st.info("Generate a password hash with: python -m fivecent.admin_auth")
     st.stop()
 
+session = st.session_state.get("admin_session")
+if not session_valid(session, admin_settings):
+    if session is not None:
+        _sign_out("Your session expired. Please sign in again.")
+    _, login_column, _ = st.columns([1, 2, 1])
+    with login_column:
+        st.title("Fivecent")
+        st.subheader("Admin sign in")
+        st.caption("Secure operator access to your agencies, brokers and messaging settings.")
+        if notice := st.session_state.pop("login_notice", ""):
+            st.error(notice)
+        with st.form("admin_login"):
+            st.text_input("Username", key="login_username")
+            st.text_input("Password", type="password", key="login_password")
+            st.form_submit_button("Sign in", on_click=_sign_in, use_container_width=True)
+        st.caption("Restricted to authorized operators. Contact your administrator for access.")
+    st.stop()
+
+st.session_state["admin_session"]["last_seen"] = time.monotonic()
+
+with st.sidebar:
+    st.title("Fivecent")
+    st.caption("ADMIN WORKSPACE")
+    st.write(f"Signed in as **{admin_settings.username}**")
+    st.button("Sign out", on_click=_sign_out, use_container_width=True)
+    st.divider()
+    st.subheader("Agencies")
+    st.button("Reload agencies", use_container_width=True)
+    st.caption("Sessions expire after 30 minutes of inactivity or 8 hours total.")
+
+st.title("Agency workspace")
+st.caption("Manage agency identity, financial guardrails, AI services and broker connections.")
+
 tenants = list_tenants()
+if tenants is None:
+    st.stop()
+
+agency_count, active_count, broker_count = st.columns(3)
+agency_count.metric("Agencies", len(tenants))
+active_count.metric("Active agencies", sum(bool(t.get("is_active")) for t in tenants))
+broker_count.metric("Brokers", sum(len(t.get("brokers") or []) for t in tenants))
+st.divider()
 if not tenants:
-    st.warning("No agencies returned. Create one below, or check the token and that uvicorn is running.")
+    st.info("No agencies yet. Use New agency below to create your first agency.")
 
 labels = {
     t["tenant_id"]: f"{t['agency_name']} ({t['tenant_id']})"
     for t in tenants
 }
 ids = list(labels.keys())
-selected = st.selectbox(
+selected = st.sidebar.selectbox(
     "Agency",
     options=ids,
     format_func=lambda tid: labels.get(tid) or str(tid),
     index=0 if ids else None,
     placeholder="No agencies yet",
 )
+
+tenant = get_tenant(selected) if selected else None
+if selected and tenant is None:
+    st.stop()
+if tenant is not None:
+    st.subheader(tenant["agency_name"])
+    st.caption(
+        f"{tenant['tenant_id']} | {tenant['home_port']} | "
+        f"{'Active' if tenant.get('is_active') else 'Inactive'}"
+    )
 
 create_tab, identity_tab, money_tab, ai_service_tab, flags_tab, telegram_tab, brokers_tab = st.tabs(
     ["New agency", "Identity", "Money", "AI & service", "Flags", "Telegram", "Brokers"]
@@ -150,10 +231,6 @@ with create_tab:
         else:
             _error(response)
 
-if not selected:
-    st.stop()
-
-tenant = get_tenant(selected)
 if tenant is None:
     st.stop()
 
@@ -268,7 +345,9 @@ with flags_tab:
     with st.form("flags"):
         edited = {}
         for key, label in FLAG_LABELS:
-            edited[key] = st.checkbox(label, value=bool(flags.get(key, False)), key=f"flag_{key}")
+            edited[key] = st.checkbox(
+                label, value=bool(flags.get(key, False)), key=f"flag_{selected}_{key}"
+            )
         start = st.text_input("After-hours start (HH:MM)", value=str(flags.get("after_hours_start", "19:00")))
         end = st.text_input("After-hours end (HH:MM)", value=str(flags.get("after_hours_end", "08:00")))
         save_flags = st.form_submit_button("Save flags")

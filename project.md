@@ -2,6 +2,46 @@ Here is the comprehensive feature set and technical architecture for the Antibes
 
 ---
 
+### Admin workspace and sign-in
+
+The Streamlit admin is a separate operator-only service. Browser users must sign
+in with a username and password before any agency data or forms are loaded.
+The API bearer token stays on the server and is never entered in the browser.
+
+1. Install the UI and test dependencies: `python -m pip install -e ".[admin,dev]"`.
+2. Generate a unique API token with
+   `python -c "import secrets; print(secrets.token_urlsafe(32))"`.
+   Set `ADMIN_API_TOKEN` to this value on both the API and admin services.
+3. Run `python -m fivecent.admin_auth` to generate a salted PBKDF2-SHA256 password
+   hash (600,000 iterations). Use a unique password of at least 12 characters.
+4. Set `ADMIN_USERNAME` and `ADMIN_PASSWORD_HASH` on the admin service.
+   In `.env`, paste the generated hash **including the single quotes**, so shell
+   launchers do not expand its `$` separators. In Render's environment editor,
+   paste just the hash value without surrounding quotes.
+5. Set `ADMIN_API_BASE` to the backend URL. Run `./start.sh` for both services or
+   `./admin.sh` for just the UI, then open `http://127.0.0.1:8501` and sign in.
+   Direct `streamlit run admin/app.py` also reads these settings from `.env`.
+
+There are no default credentials or public registration. Missing or malformed
+configuration disables sign-in. The launchers validate it before starting.
+The dashboard retains agency creation, identity, financial rules, AI/service
+selection, feature flags, Telegram onboarding, and broker management.
+
+Sessions are server-side and browser-session scoped: a new connection requires
+sign-in. Sign out clears credentials, session state and form values. Sessions
+expire on the next interaction after 30 minutes idle or 8 hours total; changing
+the username, password hash, API token or API URL also invalidates them. An API
+401/403 forces sign-out; connection and server errors are shown explicitly.
+Five failed login attempts block further attempts for a rolling 60-second
+window across **all sessions in one UI process**. For multiple replicas or an
+internet-facing deployment, use HTTPS and an ingress/identity provider with
+shared rate limiting; this single-operator login is not a multi-user/SSO system.
+Do not expose Streamlit's HTTP port directly on an untrusted network.
+
+Run the auth and UI regressions with:
+`python -m pytest tests/application/test_admin_auth.py tests/application/test_admin_login.py tests/admin/test_ui.py`.
+UI tests require the `admin` extra.
+
 ### Core System Features
 
 #### 1. Inbound Qualification & Charter Extraction

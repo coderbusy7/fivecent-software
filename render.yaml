@@ -14,3 +14,7 @@ services:
         sync: false
       - key: ADMIN_API_BASE
         sync: false
+      - key: ADMIN_USERNAME
+        sync: false
+      - key: ADMIN_PASSWORD_HASH
+        sync: false

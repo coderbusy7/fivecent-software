@@ -11,8 +11,9 @@ Local /chat works without Redis (inline queue + SQLite).
 WhatsApp /webhook requires WHATSAPP_APP_SECRET, WHATSAPP_VERIFY_TOKEN,
 and Redis if REDIS_URL is set so ACK only enqueues.
 
-Internal admin (set ADMIN_API_TOKEN first):
+Internal admin (configure ADMIN_API_TOKEN, ADMIN_USERNAME, ADMIN_PASSWORD_HASH first):
     python -m pip install -e ".[admin]"
+    python -m fivecent.admin_auth
     ./start.sh
 """
 
