@@ -377,7 +377,7 @@ def register_internal_routes(app, *, get_container, get_settings_fn) -> None:
 
     @router.get("/alerts/pending", dependencies=[Depends(admin)])
     async def list_pending_alerts() -> list[dict]:
-        yachting = container.services.get("yachting")
+        yachting = get_container().services.get("yachting")
         outbox = getattr(yachting, "_alert_outbox", None)
         if outbox is None:
             return []
@@ -385,7 +385,7 @@ def register_internal_routes(app, *, get_container, get_settings_fn) -> None:
 
     @router.post("/alerts/flush", dependencies=[Depends(admin)])
     async def flush_pending_alerts() -> dict:
-        yachting = container.services.get("yachting")
+        yachting = get_container().services.get("yachting")
         flush = getattr(yachting, "flush_broker_alerts", None)
         if flush is None:
             raise HTTPException(status_code=503, detail="Alert outbox is unavailable.")

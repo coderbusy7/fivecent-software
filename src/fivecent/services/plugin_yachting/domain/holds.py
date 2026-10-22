@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
-from typing import Optional, Sequence
+from typing import Sequence
 
 from fivecent.services.plugin_yachting.domain.fleet import ActiveHold, hold_overlaps
 from fivecent.services.plugin_yachting.domain.quoting import DomainError

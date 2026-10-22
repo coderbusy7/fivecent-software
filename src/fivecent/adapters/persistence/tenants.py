@@ -12,7 +12,6 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from fivecent.adapters.persistence.models import Broker as BrokerRow
 from fivecent.adapters.persistence.models import TelegramDeskInvite, Tenant
 from fivecent.domain.tenancy import (
-    DEFAULT_FEATURE_FLAGS,
     Broker,
     FeatureFlags,
     TenantContext,

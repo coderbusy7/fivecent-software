@@ -9,3 +9,4 @@ fivecent-local.db
 *.db
 dist/
 build/
+artifacts/

@@ -24,6 +24,7 @@ dependencies = [
 dev = [
     "pytest>=8.3",
     "pytest-asyncio>=0.24",
+    "ruff>=0.9",
 ]
 admin = [
     "streamlit>=1.39",
@@ -36,10 +37,26 @@ build-backend = "setuptools.build_meta"
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.setuptools.package-dir]
+"" = "src"
+
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 pythonpath = ["src"]
 testpaths = ["tests"]
+markers = [
+    "integration: requires live Postgres/Redis (set INTEGRATION_* URLs)",
+    "ai_live: optional live LLM evaluations (not run in default CI)",
+]
 
-[tool.setuptools.package-dir]
-"" = "src"
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+src = ["src", "admin", "e2e", "tests"]
+
+[tool.ruff.lint]
+# Keep CI lint focused; broaden gradually without a repo-wide style rewrite.
+select = ["E", "F"]
+ignore = [
+    "E501",  # line length — prefer readability over hard wrap for now
+]
