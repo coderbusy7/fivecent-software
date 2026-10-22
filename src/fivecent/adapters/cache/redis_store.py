@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from contextlib import asynccontextmanager
 from typing import Optional
@@ -11,7 +12,8 @@ from fivecent.application.ports import LockBusy
 
 WINDOW_TTL_SECONDS = 48 * 3600
 WINDOW_LIMIT = 15
-LOCK_TTL_SECONDS = 45
+LOCK_TTL_SECONDS = 120
+LOCK_RENEW_SECONDS = 60
 DEBOUNCE_TTL_SECONDS = 60
 RELEASE_LOCK = """
 if redis.call("get", KEYS[1]) == ARGV[1] then
@@ -38,10 +40,23 @@ class RedisCache:
         acquired = await self._redis.set(key, token, nx=True, ex=LOCK_TTL_SECONDS)
         if not acquired:
             raise LockBusy(key)
+        renew_task = None
         try:
+            renew_task = asyncio.create_task(self._renew_lock(key, token))
             yield
         finally:
+            if renew_task is not None:
+                renew_task.cancel()
             await self._redis.eval(RELEASE_LOCK, 1, key, token)
+
+    async def _renew_lock(self, key: str, token: str) -> None:
+        """Keep the lease alive for long LLM turns (ED-12)."""
+        while True:
+            await asyncio.sleep(LOCK_RENEW_SECONDS)
+            current = await self._redis.get(key)
+            if current != token:
+                return
+            await self._redis.expire(key, LOCK_TTL_SECONDS)
 
     async def is_human_active(self, tenant_id: str, channel: str, user_channel_id: str) -> bool:
         return bool(await self._redis.exists(f"human:{tenant_id}:{channel}:{user_channel_id}"))
@@ -52,6 +67,21 @@ class RedisCache:
         await self._redis.set(
             f"human:{tenant_id}:{channel}:{user_channel_id}", "1", ex=ttl_seconds
         )
+
+    async def clear_human_active(
+        self, tenant_id: str, channel: str, user_channel_id: str
+    ) -> None:
+        await self._redis.delete(f"human:{tenant_id}:{channel}:{user_channel_id}")
+
+    async def check_tenant_rate_limit(
+        self, tenant_id: str, *, limit_per_minute: int = 60
+    ) -> bool:
+        """Return True when under budget; False when tenant is rate-limited."""
+        key = f"rate:tenant:{tenant_id}:minute"
+        count = await self._redis.incr(key)
+        if count == 1:
+            await self._redis.expire(key, 60)
+        return int(count) <= limit_per_minute
 
     async def get_window(self, tenant_id: str, channel: str, user_channel_id: str) -> list[dict]:
         raw: Optional[str] = await self._redis.get(f"window:{tenant_id}:{channel}:{user_channel_id}")

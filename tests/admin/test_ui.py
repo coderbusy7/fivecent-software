@@ -52,7 +52,9 @@ def ui(monkeypatch):
                 return httpx.Response(200, json={"boat_id": "agency-one__demo", "active": False})
             tenant.update(json.loads(request.content))
         if path == "/internal/tenants":
-            return httpx.Response(200, json=[tenant])
+            return httpx.Response(
+                200, json={"total": 1, "offset": 0, "limit": 200, "items": [tenant]}
+            )
         if path.endswith("/fleet"):
             if request.method == "POST":
                 return httpx.Response(
@@ -75,6 +77,29 @@ def ui(monkeypatch):
             )
         if path.endswith("/fleet/seed-starter"):
             return httpx.Response(200, json={"boats": []})
+        if path == "/internal/users":
+            return httpx.Response(200, json=[])
+        if path == "/internal/audit":
+            return httpx.Response(200, json=[])
+        if path == "/internal/metrics":
+            return httpx.Response(
+                200,
+                json={
+                    "failed_inbound": 0,
+                    "failed_messages": 0,
+                    "in_flight_messages": 0,
+                    "oldest_failed_inbound_at": None,
+                    "load_target": {"concurrent_conversations": 50},
+                },
+            )
+        if path == "/internal/inbound/failed":
+            return httpx.Response(200, json=[])
+        if path.endswith("/usage"):
+            return httpx.Response(200, json={"tenant_id": "agency-one", "days": 14, "items": []})
+        if path.endswith("/conversations"):
+            return httpx.Response(
+                200, json={"total": 0, "offset": 0, "limit": 50, "items": []}
+            )
         return httpx.Response(200, json=tenant)
 
     original_client = httpx.Client
@@ -122,8 +147,9 @@ def test_valid_login_dashboard_save_and_logout(ui):
     app, requests, _ = ui
     app.run()
     sign_in(app)
-    assert len(app.tabs) == 9
-    assert [metric.value for metric in app.metric] == ["1", "1", "0"]
+    assert len(app.tabs) == 12
+    # Top agency summary metrics only (ops tab adds more).
+    assert [metric.value for metric in app.metric][:3] == ["1", "1", "0"]
     assert all(request.headers["Authorization"] == "Bearer backend-test-token" for request in requests)
     assert not any(field.label in {"Admin token", "API base URL"} for field in app.text_input)
     assert "login_password" not in app.session_state

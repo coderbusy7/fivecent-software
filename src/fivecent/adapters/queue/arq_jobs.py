@@ -37,6 +37,27 @@ async def flush_broker_alerts(ctx: dict) -> dict:
     return await flush()
 
 
+async def purge_cache_and_retention(ctx: dict) -> dict:
+    """Bounded cache cleanup + retention sweep (ED-12/ED-13)."""
+    container = ctx["container"]
+    settings: Settings = ctx.get("settings") or get_settings()
+    purged = 0
+    purge = getattr(container.cache, "purge_expired", None)
+    if callable(purge):
+        purged = int(purge() or 0)
+    retention: dict = {}
+    sessions = getattr(container.conversations, "_sessions", None)
+    if sessions is not None:
+        from fivecent.adapters.persistence.ops import SqlOpsRepo
+
+        retention = await SqlOpsRepo(sessions).apply_retention(
+            message_days=settings.retention_messages_days,
+            payload_days=settings.retention_inbound_payloads_days,
+            audit_days=settings.retention_audit_days,
+        )
+    return {"cache_purged": purged, "retention": retention}
+
+
 async def startup(ctx: dict) -> None:
     from fivecent.composition import build_container
     from fivecent.production import validate_production_settings
@@ -61,11 +82,15 @@ def worker_settings_from(settings: Settings) -> type:
     redis_settings = _redis_settings(settings.redis_url)
 
     class WorkerSettings:
-        functions = [process_inbound, flush_broker_alerts]
-        cron_jobs = [cron(flush_broker_alerts, minute={0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55})]
+        functions = [process_inbound, flush_broker_alerts, purge_cache_and_retention]
+        cron_jobs = [
+            cron(flush_broker_alerts, minute={0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55}),
+            cron(purge_cache_and_retention, hour={3}, minute={15}),
+        ]
         on_startup = startup
         on_shutdown = shutdown
         redis_settings = redis_settings
+        max_jobs = settings.worker_max_jobs
 
     return WorkerSettings
 
@@ -73,10 +98,14 @@ def worker_settings_from(settings: Settings) -> type:
 class WorkerSettings:
     """`arq fivecent.adapters.queue.arq_jobs.WorkerSettings`"""
 
-    functions = [process_inbound, flush_broker_alerts]
-    cron_jobs = [cron(flush_broker_alerts, minute={0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55})]
+    functions = [process_inbound, flush_broker_alerts, purge_cache_and_retention]
+    cron_jobs = [
+        cron(flush_broker_alerts, minute={0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55}),
+        cron(purge_cache_and_retention, hour={3}, minute={15}),
+    ]
     on_startup = startup
     on_shutdown = shutdown
     redis_settings = RedisSettings.from_dsn(
         get_settings().redis_url or "redis://localhost:6379/0"
     )
+    max_jobs = get_settings().worker_max_jobs

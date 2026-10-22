@@ -44,6 +44,10 @@ class CachePort(Protocol):
         self, tenant_id: str, channel: str, user_channel_id: str, ttl_seconds: int = 86400
     ) -> None: ...
 
+    async def clear_human_active(
+        self, tenant_id: str, channel: str, user_channel_id: str
+    ) -> None: ...
+
     async def get_window(
         self, tenant_id: str, channel: str, user_channel_id: str
     ) -> list[dict]: ...

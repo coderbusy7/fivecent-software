@@ -35,6 +35,39 @@ class MemoryCache:
     ) -> None:
         self._human[(tenant_id, channel, user_channel_id)] = time() + ttl_seconds
 
+    async def clear_human_active(
+        self, tenant_id: str, channel: str, user_channel_id: str
+    ) -> None:
+        self._human.pop((tenant_id, channel, user_channel_id), None)
+
+    async def check_tenant_rate_limit(
+        self, tenant_id: str, *, limit_per_minute: int = 60
+    ) -> bool:
+        key = f"rate:tenant:{tenant_id}:minute"
+        bucket = int(time() // 60)
+        counter_key = f"{key}:{bucket}"
+        # Drop prior minute buckets so counters stay bounded.
+        stale = [k for k in self._counters if k.startswith(f"{key}:") and k != counter_key]
+        for k in stale:
+            self._counters.pop(k, None)
+        self._counters[counter_key] += 1
+        return self._counters[counter_key] <= limit_per_minute
+
+    def purge_expired(self) -> int:
+        """Drop expired human/window/outbound entries (ED-12 bounded cleanup)."""
+        now = time()
+        removed = 0
+        for store in (self._human, self._outbound):
+            stale = [key for key, expires in store.items() if expires < now]
+            for key in stale:
+                store.pop(key, None)
+                removed += 1
+        stale_windows = [key for key, packed in self._window.items() if packed[0] < now]
+        for key in stale_windows:
+            self._window.pop(key, None)
+            removed += 1
+        return removed
+
     async def get_window(self, tenant_id: str, channel: str, user_channel_id: str) -> list[dict]:
         packed = self._window.get((tenant_id, channel, user_channel_id))
         if not packed or packed[0] < time():

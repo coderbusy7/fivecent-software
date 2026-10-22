@@ -67,6 +67,52 @@ class Conversation(Base):
     tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id"), index=True)
     channel: Mapped[str] = mapped_column(String(32))
     user_channel_id: Mapped[str] = mapped_column(String(128))
+    assigned_broker_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    handoff_status: Mapped[str] = mapped_column(String(32), default="open")
+    updated_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class AdminUser(Base):
+    __tablename__ = "admin_users"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    email: Mapped[str] = mapped_column(String(255), unique=True)
+    display_name: Mapped[str] = mapped_column(String(255))
+    role: Mapped[str] = mapped_column(String(32))
+    tenant_id: Mapped[Optional[str]] = mapped_column(ForeignKey("tenants.id"), nullable=True)
+    password_hash: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    api_token_hash: Mapped[Optional[str]] = mapped_column(String(128), unique=True, nullable=True)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    disabled_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class AdminAuditLog(Base):
+    __tablename__ = "admin_audit_log"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    actor_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    actor_email: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    tenant_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True, index=True)
+    action: Mapped[str] = mapped_column(String(64))
+    resource_type: Mapped[str] = mapped_column(String(64))
+    resource_id: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    before_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    after_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+
+
+class TenantUsageDaily(Base):
+    __tablename__ = "tenant_usage_daily"
+    __table_args__ = (UniqueConstraint("tenant_id", "day"),)
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id"), index=True)
+    day: Mapped[str] = mapped_column(String(10))
+    tokens_in: Mapped[int] = mapped_column(Integer, default=0)
+    tokens_out: Mapped[int] = mapped_column(Integer, default=0)
+    turns: Mapped[int] = mapped_column(Integer, default=0)
+    estimated_cost_usd: Mapped[Decimal] = mapped_column(Numeric(12, 6), default=Decimal("0"))
 
 
 class Message(Base):

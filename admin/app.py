@@ -64,13 +64,19 @@ def api_request(method: str, path: str, **kwargs: Any) -> httpx.Response | None:
 
 
 def list_tenants() -> list[dict[str, Any]] | None:
-    response = api_request("GET", "/internal/tenants")
+    response = api_request("GET", "/internal/tenants", params={"limit": 200})
     if response is None:
         return None
     if response.status_code != 200:
         _error(response)
         return None
-    return response.json()
+    body = response.json()
+    if isinstance(body, list):
+        return body
+    if isinstance(body, dict):
+        items = body.get("items")
+        return items if isinstance(items, list) else []
+    return []
 
 
 def get_tenant(tenant_id: str) -> dict[str, Any] | None:
@@ -195,6 +201,7 @@ if tenant is not None:
 (
     create_tab,
     setup_tab,
+    inbox_tab,
     identity_tab,
     money_tab,
     fleet_tab,
@@ -202,10 +209,13 @@ if tenant is not None:
     flags_tab,
     telegram_tab,
     brokers_tab,
+    users_tab,
+    ops_tab,
 ) = st.tabs(
     [
         "New agency",
         "Setup",
+        "Inbox",
         "Identity",
         "Money",
         "Fleet",
@@ -213,46 +223,197 @@ if tenant is not None:
         "Flags",
         "Telegram",
         "Brokers",
+        "Users",
+        "Ops",
     ]
 )
 
 with create_tab:
     st.subheader("Add agency")
+    st.caption("Required fields must be filled before create. Unsaved form values are lost on navigation.")
     with st.form("create_tenant"):
         tenant_id = st.text_input("Tenant id", placeholder="cannes_luxury")
         agency_name = st.text_input("Agency name")
         home_port = st.text_input("Home port", value="Port Vauban")
         phone_id = st.text_input("WhatsApp phone_number_id")
         waba_id = st.text_input("WhatsApp waba_id")
-        service_type = st.selectbox("Service type", options=["yachting"])
-        llm_provider = st.selectbox("LLM provider", options=["openai", "anthropic"])
-        llm_model = st.text_input("Model", value="gpt-4o-mini")
+        service_type = st.selectbox(
+            "Service type",
+            options=["yachting"],
+            help="Only registered service modules are listed.",
+        )
+        llm_provider = st.selectbox(
+            "LLM provider",
+            options=["openai", "anthropic"],
+            help="Must match a configured provider plugin on the API.",
+        )
+        llm_model = st.text_input(
+            "Model",
+            value="gpt-4o-mini",
+            help="Provider-specific model id used for this agency.",
+        )
         submitted = st.form_submit_button("Create")
     if submitted:
-        response = api_request(
-            "POST",
-            "/internal/tenants",
-            json={
-                "tenant_id": tenant_id.strip(),
-                "agency_name": agency_name.strip(),
-                "home_port": home_port.strip(),
-                "whatsapp_phone_number_id": phone_id.strip(),
-                "whatsapp_waba_id": waba_id.strip(),
-                "service_type": service_type,
-                "llm_provider": llm_provider,
-                "llm_model": llm_model.strip(),
-            },
-        )
+        with st.spinner("Creating agency…"):
+            response = api_request(
+                "POST",
+                "/internal/tenants",
+                json={
+                    "tenant_id": tenant_id.strip(),
+                    "agency_name": agency_name.strip(),
+                    "home_port": home_port.strip(),
+                    "whatsapp_phone_number_id": phone_id.strip(),
+                    "whatsapp_waba_id": waba_id.strip(),
+                    "service_type": service_type,
+                    "llm_provider": llm_provider,
+                    "llm_model": llm_model.strip(),
+                },
+            )
         if response is None:
             st.stop()
         if response.is_success:
-            st.success(f"Created {tenant_id}")
+            st.session_state["flash_success"] = f"Created {tenant_id.strip()}"
             st.rerun()
         else:
             _error(response)
 
+if flash := st.session_state.pop("flash_success", None):
+    st.success(flash)
+
 if tenant is None:
     st.stop()
+
+with inbox_tab:
+    st.subheader("Conversation inbox")
+    st.caption("Search, open transcripts, take over or resume the bot. Manual replies mute the bot for 24h.")
+    q = st.text_input("Search conversations", placeholder="phone, channel, or conversation id")
+    inbox_resp = api_request(
+        "GET",
+        f"/internal/tenants/{selected}/conversations",
+        params={"q": q.strip(), "limit": 50},
+    )
+    if inbox_resp is None:
+        st.stop()
+    if not inbox_resp.is_success:
+        _error(inbox_resp)
+    else:
+        inbox = inbox_resp.json()
+        items = inbox.get("items") or []
+        if not items:
+            st.info("No conversations yet for this agency.")
+        else:
+            st.caption(f"{inbox.get('total', len(items))} conversation(s)")
+            labels = {
+                row["conversation_id"]: (
+                    f"{row.get('user_channel_id')} · {row.get('handoff_status')} · "
+                    f"{row.get('last_status') or 'n/a'}"
+                )
+                for row in items
+            }
+            picked = st.selectbox(
+                "Conversation",
+                options=list(labels.keys()),
+                format_func=lambda cid: labels.get(cid, cid),
+            )
+            detail_resp = api_request(
+                "GET", f"/internal/tenants/{selected}/conversations/{picked}"
+            )
+            if detail_resp is None:
+                st.stop()
+            if not detail_resp.is_success:
+                _error(detail_resp)
+            else:
+                detail = detail_resp.json()
+                commercial = detail.get("commercial") or {}
+                col_a, col_b, col_c = st.columns(3)
+                col_a.metric("Handoff", detail.get("handoff_status") or "open")
+                col_b.metric("Human active", "yes" if detail.get("human_active") else "no")
+                lead = commercial.get("lead") or {}
+                col_c.metric("Lead", lead.get("state") or "—")
+                if commercial.get("quote"):
+                    st.write(
+                        f"Quote `{commercial['quote'].get('quote_id')}` · "
+                        f"{commercial['quote'].get('total')} {commercial['quote'].get('currency')}"
+                    )
+                if commercial.get("hold"):
+                    st.write(
+                        f"Hold `{commercial['hold'].get('hold_id')}` expires "
+                        f"{commercial['hold'].get('expires_at')}"
+                    )
+                messages = detail.get("messages") or []
+                if not messages:
+                    st.info("No messages in this conversation yet.")
+                else:
+                    for msg in messages[-40:]:
+                        st.markdown(
+                            f"**{msg.get('role')}** · `{msg.get('processing_status')}`  \n"
+                            f"{msg.get('text') or ''}"
+                        )
+                actions = st.columns(4)
+                if actions[0].button("Take over", key=f"takeover_{picked}"):
+                    resp = api_request(
+                        "POST",
+                        f"/internal/tenants/{selected}/conversations/{picked}/takeover",
+                    )
+                    if resp and resp.is_success:
+                        st.session_state["flash_success"] = "Bot muted — you own this thread"
+                        st.rerun()
+                    elif resp:
+                        _error(resp)
+                if actions[1].button("Resume bot", key=f"resume_{picked}"):
+                    resp = api_request(
+                        "POST",
+                        f"/internal/tenants/{selected}/conversations/{picked}/resume-bot",
+                    )
+                    if resp and resp.is_success:
+                        st.session_state["flash_success"] = "Bot resumed"
+                        st.rerun()
+                    elif resp:
+                        _error(resp)
+                if actions[2].button("Mark resolved", key=f"resolve_{picked}"):
+                    resp = api_request(
+                        "PATCH",
+                        f"/internal/tenants/{selected}/conversations/{picked}",
+                        json={"handoff_status": "resolved"},
+                    )
+                    if resp and resp.is_success:
+                        st.session_state["flash_success"] = "Marked resolved"
+                        st.rerun()
+                    elif resp:
+                        _error(resp)
+                if actions[3].button("Export JSON", key=f"export_{picked}"):
+                    resp = api_request(
+                        "POST",
+                        f"/internal/tenants/{selected}/conversations/{picked}/export",
+                    )
+                    if resp and resp.is_success:
+                        st.download_button(
+                            "Download export",
+                            data=str(resp.json()),
+                            file_name=f"{picked}.json",
+                            mime="application/json",
+                        )
+                    elif resp:
+                        _error(resp)
+                with st.form(f"manual_reply_{picked}"):
+                    reply_text = st.text_area("Manual reply (mutes bot)")
+                    send_reply = st.form_submit_button("Send reply")
+                if send_reply:
+                    if not reply_text.strip():
+                        st.error("Reply text is required.")
+                    else:
+                        resp = api_request(
+                            "POST",
+                            f"/internal/tenants/{selected}/conversations/{picked}/reply",
+                            json={"text": reply_text.strip()},
+                        )
+                        if resp is None:
+                            st.stop()
+                        if resp.is_success:
+                            st.session_state["flash_success"] = "Reply sent"
+                            st.rerun()
+                        else:
+                            _error(resp)
 
 with setup_tab:
     st.subheader("Onboarding checklist")
@@ -592,6 +753,107 @@ with telegram_tab:
             st.success(f"Sent to {body.get('to')} · outbound `{body.get('outbound_id')}`")
         else:
             _error(response)
+
+with users_tab:
+    st.subheader("Named operators")
+    st.caption("Platform admins mint API tokens for agency admins and brokers. Disable revokes access immediately.")
+    users_resp = api_request("GET", "/internal/users")
+    if users_resp is None:
+        st.stop()
+    if users_resp.status_code == 403:
+        st.info("Your role cannot manage users.")
+    elif not users_resp.is_success:
+        _error(users_resp)
+    else:
+        named = users_resp.json() or []
+        if not named:
+            st.info("No named users yet.")
+        else:
+            st.dataframe(named, hide_index=True, use_container_width=True)
+        with st.form("create_user"):
+            email = st.text_input("Email")
+            display_name = st.text_input("Display name")
+            role = st.selectbox(
+                "Role", options=["platform_admin", "agency_admin", "broker"]
+            )
+            user_tenant = st.text_input(
+                "Tenant id",
+                value=selected if role != "platform_admin" else "",
+                help="Required for agency_admin and broker.",
+            )
+            create_user = st.form_submit_button("Create user")
+        if create_user:
+            if not email.strip() or not display_name.strip():
+                st.error("Email and display name are required.")
+            else:
+                resp = api_request(
+                    "POST",
+                    "/internal/users",
+                    json={
+                        "email": email.strip(),
+                        "display_name": display_name.strip(),
+                        "role": role,
+                        "tenant_id": user_tenant.strip() or None,
+                    },
+                )
+                if resp is None:
+                    st.stop()
+                if resp.is_success:
+                    body = resp.json()
+                    token = body.get("api_token")
+                    st.success("User created — copy the API token now; it is shown once.")
+                    if token:
+                        st.code(token, language=None)
+                    st.rerun()
+                else:
+                    _error(resp)
+        audit_resp = api_request("GET", "/internal/audit", params={"limit": 50})
+        if audit_resp and audit_resp.is_success:
+            st.subheader("Recent audit")
+            st.dataframe(audit_resp.json() or [], hide_index=True, use_container_width=True)
+
+with ops_tab:
+    st.subheader("Operational health")
+    st.caption("Queue/failure counters and AI spend. Configuration presence ≠ successful delivery.")
+    metrics_resp = api_request("GET", "/internal/metrics")
+    if metrics_resp is None:
+        st.stop()
+    if metrics_resp.status_code == 403:
+        st.info("Your role cannot view ops metrics.")
+    elif not metrics_resp.is_success:
+        _error(metrics_resp)
+    else:
+        metrics = metrics_resp.json()
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric("Failed inbound", metrics.get("failed_inbound", 0))
+        m2.metric("Failed messages", metrics.get("failed_messages", 0))
+        m3.metric("In-flight", metrics.get("in_flight_messages", 0))
+        m4.metric("Oldest failed", metrics.get("oldest_failed_inbound_at") or "—")
+        st.json(metrics.get("load_target") or {})
+    usage_resp = api_request("GET", f"/internal/tenants/{selected}/usage", params={"days": 14})
+    if usage_resp and usage_resp.is_success:
+        st.subheader("AI usage (14d)")
+        usage_items = (usage_resp.json() or {}).get("items") or []
+        if not usage_items:
+            st.info("No usage recorded yet.")
+        else:
+            st.dataframe(usage_items, hide_index=True, use_container_width=True)
+    failed_resp = api_request("GET", "/internal/inbound/failed")
+    if failed_resp and failed_resp.is_success:
+        failed = failed_resp.json() or []
+        st.subheader("Failed inbound")
+        if not failed:
+            st.success("No failed inbound payloads.")
+        else:
+            st.dataframe(failed, hide_index=True, use_container_width=True)
+            replay_id = st.text_input("Payload id to replay")
+            if st.button("Replay inbound") and replay_id.strip():
+                replayed = api_request("POST", f"/internal/inbound/{replay_id.strip()}/replay")
+                if replayed and replayed.is_success:
+                    st.session_state["flash_success"] = "Replay queued"
+                    st.rerun()
+                elif replayed:
+                    _error(replayed)
 
 with brokers_tab:
     st.subheader("Brokers")

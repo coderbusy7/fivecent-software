@@ -6,7 +6,7 @@ from decimal import Decimal
 from typing import Any, Optional
 from uuid import uuid4
 
-from sqlalchemy import select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from fivecent.adapters.persistence.models import Broker as BrokerRow
@@ -61,13 +61,60 @@ class SqlTenantRepo:
         self._routing_cache: dict[str, tuple[float, dict[str, str]]] = {}
 
     async def list_all(self) -> list[TenantContext]:
+        page = await self.list_page(offset=0, limit=10_000)
+        return page["items"]
+
+    async def list_page(
+        self,
+        *,
+        q: str = "",
+        offset: int = 0,
+        limit: int = 50,
+        tenant_id: Optional[str] = None,
+    ) -> dict:
+        """Paginated/searchable agency list (ED-12)."""
+        limit = max(1, min(limit, 200))
+        offset = max(0, offset)
         async with self._sessions() as session:
-            tenants = (await session.execute(select(Tenant).order_by(Tenant.agency_name))).scalars().all()
-            brokers = (await session.execute(select(BrokerRow))).scalars().all()
+            stmt = select(Tenant)
+            if tenant_id:
+                stmt = stmt.where(Tenant.id == tenant_id)
+            if q.strip():
+                like = f"%{q.strip()}%"
+                stmt = stmt.where(
+                    or_(
+                        Tenant.id.ilike(like),
+                        Tenant.agency_name.ilike(like),
+                        Tenant.home_port.ilike(like),
+                    )
+                )
+            total = await session.scalar(select(func.count()).select_from(stmt.subquery()))
+            tenants = (
+                await session.execute(
+                    stmt.order_by(Tenant.agency_name).offset(offset).limit(limit)
+                )
+            ).scalars().all()
+            tenant_ids = [row.id for row in tenants]
+            brokers: list[BrokerRow] = []
+            if tenant_ids:
+                brokers = list(
+                    (
+                        await session.execute(
+                            select(BrokerRow).where(BrokerRow.tenant_id.in_(tenant_ids))
+                        )
+                    )
+                    .scalars()
+                    .all()
+                )
         by_tenant: dict[str, list[BrokerRow]] = {}
         for broker in brokers:
             by_tenant.setdefault(broker.tenant_id, []).append(broker)
-        return [_context(row, by_tenant.get(row.id, [])) for row in tenants]
+        return {
+            "total": int(total or 0),
+            "offset": offset,
+            "limit": limit,
+            "items": [_context(row, by_tenant.get(row.id, [])) for row in tenants],
+        }
 
     async def get(self, tenant_id: str) -> Optional[TenantContext]:
         async with self._sessions() as session:

@@ -32,6 +32,16 @@ class Settings(BaseSettings):
     # Quiet window before coalescing rapid WhatsApp bursts into one orchestrator turn.
     # Set 0 to disable (tests / debugging).
     debounce_seconds: float = 2.0
+    # ED-12: per-tenant turn budget (Redis/memory counter, rolling minute).
+    tenant_rate_limit_per_minute: int = 60
+    # ED-12/13: daily token budget before turns are rejected with an explicit skip.
+    tenant_daily_token_budget: int = 500_000
+    # ED-12: ARQ worker process concurrency.
+    worker_max_jobs: int = 10
+    # ED-13 retention defaults (days).
+    retention_messages_days: int = 365
+    retention_inbound_payloads_days: int = 90
+    retention_audit_days: int = 730
 
     @field_validator("app_env")
     @classmethod

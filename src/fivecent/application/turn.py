@@ -226,6 +226,20 @@ async def handle_turn(event: InboundMessageEvent, container: Container) -> TurnR
                 )
                 return await _skip(container, event, conversation_id, "outside_hours")
 
+            rate_ok = await _tenant_under_rate_limit(container, event.tenant_id)
+            if not rate_ok:
+                logger.warning(
+                    "tenant rate limited tenant=%s", event.tenant_id
+                )
+                return await _skip(container, event, conversation_id, "rate_limited")
+
+            budget_ok = await _tenant_under_token_budget(container, event.tenant_id)
+            if not budget_ok:
+                logger.warning(
+                    "tenant token budget exceeded tenant=%s", event.tenant_id
+                )
+                return await _skip(container, event, conversation_id, "token_budget")
+
             window = await container.cache.get_window(
                 event.tenant_id, event.channel, event.user_channel_id
             )
@@ -275,6 +289,13 @@ async def handle_turn(event: InboundMessageEvent, container: Container) -> TurnR
                 tenant_id=event.tenant_id,
                 text=result.reply,
                 provider_message_id=outbound_id,
+                tokens_in=result.tokens_in,
+                tokens_out=result.tokens_out,
+                latency_ms=result.latency_ms,
+            )
+            await _record_usage(
+                container,
+                event.tenant_id,
                 tokens_in=result.tokens_in,
                 tokens_out=result.tokens_out,
                 latency_ms=result.latency_ms,
@@ -362,6 +383,54 @@ async def _notify_session_window_closed(
         logger.exception(
             "failed to notify brokers of session window close tenant=%s", tenant.id
         )
+
+
+async def _tenant_under_rate_limit(container: Container, tenant_id: str) -> bool:
+    checker = getattr(container.cache, "check_tenant_rate_limit", None)
+    if checker is None:
+        return True
+    from fivecent.config import get_settings
+
+    limit = get_settings().tenant_rate_limit_per_minute
+    return bool(await checker(tenant_id, limit_per_minute=limit))
+
+
+async def _tenant_under_token_budget(container: Container, tenant_id: str) -> bool:
+    from fivecent.adapters.persistence.ops import SqlOpsRepo
+    from fivecent.config import get_settings
+
+    sessions = getattr(container.conversations, "_sessions", None)
+    if sessions is None:
+        return True
+    budget = get_settings().tenant_daily_token_budget
+    if budget <= 0:
+        return True
+    used = await SqlOpsRepo(sessions).today_tokens(tenant_id)
+    return used < budget
+
+
+async def _record_usage(
+    container: Container,
+    tenant_id: str,
+    *,
+    tokens_in: int,
+    tokens_out: int,
+    latency_ms: int,
+) -> None:
+    sessions = getattr(container.conversations, "_sessions", None)
+    if sessions is None:
+        return
+    from fivecent.adapters.persistence.ops import SqlOpsRepo
+
+    try:
+        await SqlOpsRepo(sessions).record_turn_usage(
+            tenant_id,
+            tokens_in=tokens_in,
+            tokens_out=tokens_out,
+            latency_ms=latency_ms,
+        )
+    except Exception:
+        logger.exception("usage metering failed tenant=%s", tenant_id)
 
 
 def _is_greeting(text: str) -> bool:

@@ -102,7 +102,9 @@ def test_internal_admin_creates_tenant(container, settings) -> None:
         assert len(fetched.json()["brokers"]) == 1
         listed = client.get("/internal/tenants", headers={"Authorization": "Bearer admin-secret"})
         assert listed.status_code == 200
-        ids = {row["tenant_id"] for row in listed.json()}
+        payload = listed.json()
+        rows = payload["items"] if isinstance(payload, dict) else payload
+        ids = {row["tenant_id"] for row in rows}
         assert "cannes_luxury" in ids
         broker_id = broker.json()["broker_id"]
         paused = client.patch(

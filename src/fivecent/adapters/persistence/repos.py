@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 from typing import Optional
 from uuid import uuid4
 
-from sqlalchemy import select
+from sqlalchemy import func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -40,9 +40,13 @@ class SqlConversationRepo:
                 tenant_id=event.tenant_id,
                 channel=event.channel,
                 user_channel_id=event.user_channel_id,
+                handoff_status="open",
+                updated_at=datetime.now(timezone.utc),
             )
             session.add(conv)
             await session.flush()
+        else:
+            conv.updated_at = datetime.now(timezone.utc)
         return conv
 
     async def claim_inbound(self, event: InboundMessageEvent, role: str) -> Optional[str]:
@@ -229,3 +233,146 @@ class SqlConversationRepo:
             }
             for row in rows
         ]
+
+    async def list_conversations(
+        self,
+        tenant_id: str,
+        *,
+        q: str = "",
+        offset: int = 0,
+        limit: int = 50,
+    ) -> dict:
+        limit = max(1, min(limit, 200))
+        offset = max(0, offset)
+        async with self._sessions() as session:
+            stmt = select(Conversation).where(Conversation.tenant_id == tenant_id)
+            if q.strip():
+                like = f"%{q.strip()}%"
+                stmt = stmt.where(
+                    or_(
+                        Conversation.user_channel_id.ilike(like),
+                        Conversation.channel.ilike(like),
+                        Conversation.id.ilike(like),
+                    )
+                )
+            total = await session.scalar(
+                select(func.count()).select_from(stmt.subquery())
+            )
+            rows = (
+                await session.execute(
+                    stmt.order_by(Conversation.updated_at.desc().nullslast())
+                    .offset(offset)
+                    .limit(limit)
+                )
+            ).scalars().all()
+            items = []
+            for conv in rows:
+                last = await session.scalar(
+                    select(Message)
+                    .where(Message.conversation_id == conv.id)
+                    .order_by(Message.created_at.desc())
+                    .limit(1)
+                )
+                failed = await session.scalar(
+                    select(func.count())
+                    .select_from(Message)
+                    .where(
+                        Message.conversation_id == conv.id,
+                        Message.processing_status == "failed",
+                    )
+                )
+                items.append(
+                    {
+                        "conversation_id": conv.id,
+                        "tenant_id": conv.tenant_id,
+                        "channel": conv.channel,
+                        "user_channel_id": conv.user_channel_id,
+                        "assigned_broker_id": conv.assigned_broker_id,
+                        "handoff_status": conv.handoff_status or "open",
+                        "updated_at": conv.updated_at.isoformat() if conv.updated_at else None,
+                        "last_message_at": last.created_at.isoformat()
+                        if last and last.created_at
+                        else None,
+                        "last_role": last.role if last else None,
+                        "last_status": last.processing_status if last else None,
+                        "failed_count": int(failed or 0),
+                    }
+                )
+        return {"total": int(total or 0), "offset": offset, "limit": limit, "items": items}
+
+    async def get_conversation(self, tenant_id: str, conversation_id: str) -> Optional[dict]:
+        async with self._sessions() as session:
+            conv = await session.get(Conversation, conversation_id)
+            if conv is None or conv.tenant_id != tenant_id:
+                return None
+            messages = (
+                await session.execute(
+                    select(Message)
+                    .where(Message.conversation_id == conversation_id)
+                    .order_by(Message.created_at.asc())
+                    .limit(200)
+                )
+            ).scalars().all()
+            return {
+                "conversation_id": conv.id,
+                "tenant_id": conv.tenant_id,
+                "channel": conv.channel,
+                "user_channel_id": conv.user_channel_id,
+                "assigned_broker_id": conv.assigned_broker_id,
+                "handoff_status": conv.handoff_status or "open",
+                "updated_at": conv.updated_at.isoformat() if conv.updated_at else None,
+                "messages": [
+                    {
+                        "id": row.id,
+                        "role": row.role,
+                        "text": row.text,
+                        "provider_message_id": row.provider_message_id,
+                        "processing_status": row.processing_status,
+                        "skip_reason": row.skip_reason,
+                        "tokens_in": row.tokens_in,
+                        "tokens_out": row.tokens_out,
+                        "latency_ms": row.latency_ms,
+                        "created_at": row.created_at.isoformat() if row.created_at else None,
+                    }
+                    for row in messages
+                ],
+            }
+
+    async def update_conversation_ops(
+        self,
+        tenant_id: str,
+        conversation_id: str,
+        *,
+        assigned_broker_id: Optional[str] = None,
+        handoff_status: Optional[str] = None,
+        clear_assignment: bool = False,
+    ) -> Optional[dict]:
+        async with self._sessions() as session:
+            conv = await session.get(Conversation, conversation_id)
+            if conv is None or conv.tenant_id != tenant_id:
+                return None
+            if clear_assignment:
+                conv.assigned_broker_id = None
+            elif assigned_broker_id is not None:
+                conv.assigned_broker_id = assigned_broker_id
+            if handoff_status is not None:
+                conv.handoff_status = handoff_status
+            conv.updated_at = datetime.now(timezone.utc)
+            await session.commit()
+        return await self.get_conversation(tenant_id, conversation_id)
+
+    async def delete_conversation(self, tenant_id: str, conversation_id: str) -> bool:
+        async with self._sessions() as session:
+            conv = await session.get(Conversation, conversation_id)
+            if conv is None or conv.tenant_id != tenant_id:
+                return False
+            messages = (
+                await session.execute(
+                    select(Message).where(Message.conversation_id == conversation_id)
+                )
+            ).scalars().all()
+            for row in messages:
+                await session.delete(row)
+            await session.delete(conv)
+            await session.commit()
+        return True
